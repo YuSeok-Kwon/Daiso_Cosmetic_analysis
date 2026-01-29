@@ -1,0 +1,18 @@
+2026-01-28 18:44:54 - daiso_complete - INFO - ============================================================
+2026-01-28 18:44:54 - daiso_complete - INFO - 다이소 뷰티 완전판 크롤링 시작
+2026-01-28 18:44:54 - daiso_complete - INFO - ============================================================
+2026-01-28 18:45:03 - daiso_complete - INFO - Chrome 드라이버 생성 중
+2026-01-28 18:45:11 - daiso_complete - INFO - 드라이버 생성
+2026-01-28 18:45:11 - daiso_complete - INFO - 
+==================== 스킨케어/기초스킨케어 ====================
+2026-01-28 18:45:11 - daiso_complete - INFO - 카테고리 접속: 스킨케어/기초스킨케어 - https://www.daisomall.co.kr/ds/exhCtgr/C208/CTGR_00014/CTGR_00057/CTGR_00366
+2026-01-28 18:45:32 - daiso_complete - INFO - 선택자 '.product-card' 사용, 266개 발견
+2026-01-28 18:46:00 - daiso_complete - INFO - 카테고리 '스킨케어/기초스킨케어' 완료: 50개 수집
+2026-01-28 18:46:03 - daiso_complete - INFO - 
+데이터 저장 완료: data/daiso_beauty_complete_20260128.csv
+2026-01-28 18:46:03 - daiso_complete - INFO - 총 50개 상품 수집
+2026-01-28 18:46:03 - daiso_complete - INFO - 
+=== 카테고리별 수집 현황 ===
+2026-01-28 18:46:03 - daiso_complete - INFO -   - 스킨케어/기초스킨케어: 50개
+2026-01-28 18:46:03 - daiso_complete - INFO - 브라우저 종료 중
+2026-01-28 18:46:04 - daiso_complete - INFO - 브라우저 종료

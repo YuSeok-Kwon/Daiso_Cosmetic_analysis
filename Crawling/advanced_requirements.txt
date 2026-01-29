@@ -1,0 +1,11 @@
+requests
+beautifulsoup4
+selenium
+undetected-chromedriver
+webdriver-manager
+pandas
+lxml
+fake-useragent
+python-dotenv
+tqdm
+retrying

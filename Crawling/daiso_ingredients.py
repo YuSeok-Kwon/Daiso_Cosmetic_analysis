@@ -256,25 +256,66 @@ def crawl_product_details(driver, product_url, product_id):
     try:
         logger.info(f"제품 상세 페이지 접속: {product_url}")
         driver.get(product_url)
-        random_delay(2, 3)
+
+        # JavaScript 렌더링 대기
+        random_delay(3, 5)
 
         # 페이지 로딩 대기
-        wait = WebDriverWait(driver, 10)
+        wait = WebDriverWait(driver, 15)
+
+        # 페이지 스크롤 (lazy loading 콘텐츠 로드)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+        random_delay(1, 2)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        random_delay(2, 3)
+
+        # 상세정보/제품정보 탭 클릭 시도
+        tab_selectors = [
+            'button:contains("상세정보")',
+            'button:contains("제품정보")',
+            'a:contains("상세정보")',
+            'a:contains("제품정보")',
+            '.tab-detail',
+            '.tab-info',
+            '[data-tab="detail"]',
+            '[data-tab="info"]'
+        ]
+
+        for selector in tab_selectors:
+            try:
+                # jQuery 스타일 선택자는 직접 사용 불가, XPath로 변환
+                if ':contains' in selector:
+                    text = selector.split(':contains("')[1].split('")')[0]
+                    tag = selector.split(':')[0]
+                    xpath = f"//{tag}[contains(text(), '{text}')]"
+                    tab = driver.find_element(By.XPATH, xpath)
+                else:
+                    tab = driver.find_element(By.CSS_SELECTOR, selector)
+
+                driver.execute_script("arguments[0].click();", tab)
+                logger.info(f"탭 클릭 성공: {selector}")
+                random_delay(2, 3)
+                break
+            except:
+                continue
 
         # 상세정보 영역 찾기
         detail_selectors = [
             '.editor-content',
             'div[class*="editor"]',
             'div[class*="detail"]',
-            '.product-detail-content'
+            'div[class*="product-info"]',
+            '.product-detail-content',
+            '#productDetail',
+            '#product-detail',
+            '.detail-content',
+            '.info-content'
         ]
 
         detail_section = None
         for selector in detail_selectors:
             try:
-                detail_section = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                )
+                detail_section = driver.find_element(By.CSS_SELECTOR, selector)
                 logger.info(f"상세정보 영역 발견: {selector}")
                 break
             except:
@@ -282,35 +323,60 @@ def crawl_product_details(driver, product_url, product_id):
 
         if not detail_section:
             logger.warning("상세정보 영역을 찾을 수 없습니다.")
+            # 디버깅: 페이지 소스 일부 저장
+            try:
+                page_source = driver.page_source
+                logger.debug(f"페이지 소스 길이: {len(page_source)}")
+                # 이미지 태그 확인
+                imgs = driver.find_elements(By.TAG_NAME, 'img')
+                logger.debug(f"전체 이미지 수: {len(imgs)}")
+            except:
+                pass
             return product_data
 
-        # 이미지 요소들 찾기
+        # 이미지 요소들 찾기 (상세정보 영역 + 전체 페이지)
         img_elements = detail_section.find_elements(By.TAG_NAME, 'img')
-        logger.info(f"이미지 {len(img_elements)}개 발견")
+        logger.info(f"상세정보 영역 이미지 {len(img_elements)}개 발견")
 
+        # 전체 페이지에서도 이미지 검색
+        all_imgs = driver.find_elements(By.TAG_NAME, 'img')
+        logger.info(f"전체 페이지 이미지 {len(all_imgs)}개 발견")
+
+        # 중복 제거를 위해 set 사용
+        processed_srcs = set()
         all_ingredients = []
 
-        for idx, img in enumerate(img_elements):
+        # 우선 상세정보 영역 이미지 처리
+        for idx, img in enumerate(img_elements + all_imgs):
             try:
+                src = img.get_attribute('src')
+                if src in processed_srcs:
+                    continue
+                processed_srcs.add(src)
+
                 alt_text = img.get_attribute('alt')
 
-                if alt_text and '[전성분]' in alt_text:
-                    logger.info(f"전성분 정보 발견 (이미지 #{idx+1})")
+                # 전성분 키워드 확장 검색
+                if alt_text and any(keyword in alt_text for keyword in ['[전성분]', '전성분', '성분', 'ingredient']):
+                    logger.info(f"전성분 관련 이미지 발견 (이미지 #{idx+1})")
+                    logger.info(f"Alt 텍스트 길이: {len(alt_text)} 문자")
 
-                    # 전성분 추출
-                    ingredients_data = extract_ingredients_from_alt(alt_text)
+                    # [전성분]이 있는 경우만 파싱 시도
+                    if '[전성분]' in alt_text:
+                        # 전성분 추출
+                        ingredients_data = extract_ingredients_from_alt(alt_text)
 
-                    if ingredients_data['ingredients']:
-                        product_data.update({
-                            'product_name': ingredients_data['product_name'],
-                            'volume': ingredients_data['volume'],
-                            'manufacturer': ingredients_data['manufacturer'],
-                            'raw_ingredients': ingredients_data['raw_ingredients'],
-                            'status': 'success'
-                        })
+                        if ingredients_data['ingredients']:
+                            product_data.update({
+                                'product_name': ingredients_data['product_name'],
+                                'volume': ingredients_data['volume'],
+                                'manufacturer': ingredients_data['manufacturer'],
+                                'raw_ingredients': ingredients_data['raw_ingredients'],
+                                'status': 'success'
+                            })
 
-                        all_ingredients.extend(ingredients_data['ingredients'])
-                        logger.info(f"전성분 {len(ingredients_data['ingredients'])}개 추출")
+                            all_ingredients.extend(ingredients_data['ingredients'])
+                            logger.info(f"전성분 {len(ingredients_data['ingredients'])}개 추출")
 
             except Exception as e:
                 logger.warning(f"이미지 #{idx+1} 처리 실패: {str(e)}")
@@ -321,6 +387,17 @@ def crawl_product_details(driver, product_url, product_id):
             logger.info(f"총 {len(all_ingredients)}개 성분 추출 완료")
         else:
             logger.warning("전성분 정보를 찾을 수 없습니다.")
+            # 디버깅: alt 텍스트 샘플 출력
+            try:
+                sample_alts = []
+                for img in all_imgs[:5]:
+                    alt = img.get_attribute('alt')
+                    if alt:
+                        sample_alts.append(alt[:100])
+                if sample_alts:
+                    logger.debug(f"Alt 텍스트 샘플: {sample_alts}")
+            except:
+                pass
 
     except Exception as e:
         logger.error(f"제품 상세 크롤링 실패: {e}")
@@ -495,6 +572,8 @@ def process_products_csv(input_csv, max_products=None):
 
 def main():
     """메인 함수"""
+    import sys
+
     print("\n" + "=" * 70)
     print("다이소몰 전성분 추출 크롤러")
     print("=" * 70)
@@ -503,16 +582,25 @@ def main():
     print("\n주의: 교육/연구 목적으로만 사용하세요.")
     print("=" * 70)
 
-    # CSV 파일 경로 입력
-    input_csv = input("\n입력 CSV 파일 경로: ").strip()
+    # 백그라운드 실행 체크
+    if sys.stdin.isatty():
+        # CSV 파일 경로 입력
+        input_csv = input("\n입력 CSV 파일 경로: ").strip()
 
-    if not input_csv:
-        print("파일 경로가 입력되지 않았습니다.")
-        return
+        if not input_csv:
+            print("파일 경로가 입력되지 않았습니다.")
+            return
 
-    # 최대 제품 수 입력
-    max_input = input("최대 크롤링 제품 수 (Enter=전체): ").strip()
-    max_products = int(max_input) if max_input else None
+        # 최대 제품 수 입력
+        max_input = input("최대 크롤링 제품 수 (Enter=전체): ").strip()
+        max_products = int(max_input) if max_input else None
+    else:
+        # 자동 실행 모드
+        input_csv = 'data/daiso_skincare_20260129.csv'
+        max_products = 3  # 테스트를 위해 3개만
+        print(f"\n자동 실행 모드:")
+        print(f"  - 입력 파일: {input_csv}")
+        print(f"  - 최대 제품 수: {max_products if max_products else '전체'}")
 
     print(f"\n시작합니다...")
     process_products_csv(input_csv, max_products)
