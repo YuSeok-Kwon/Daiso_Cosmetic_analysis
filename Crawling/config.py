@@ -18,7 +18,7 @@ CRAWLING_CONFIG = {
     'retry_delay': 5,
 
     # 헤드리스 모드 (False = 브라우저 창 보임)
-    'headless': False,
+    'headless': True,
 
     # 데이터 저장 경로
     'data_dir': 'data',
@@ -28,6 +28,7 @@ CRAWLING_CONFIG = {
 # 다이소몰 설정
 DAISO_CONFIG = {
     'base_url': 'https://www.daisomall.co.kr',
+    'category_base': 'https://www.daisomall.co.kr/ds/exhCtgr/C208/CTGR_00014',  # 뷰티/위생 기본 URL
     'large_category': 'C208',  # 뷰티 대분류
     'middle_category': 'CTGR_00014',  # 뷰티 중분류
     'max_products_per_category': 50,
@@ -51,10 +52,7 @@ DAISO_BEAUTY_CATEGORIES = {
             "CTGR_00346": "베이스메이크업",
             "CTGR_00347": "아이메이크업",
             "CTGR_00348": "립메이크업",
-            "CTGR_00349": "메이크업브러시",
-            "CTGR_00350": "메이크업퍼프",
             "CTGR_00351": "치크/하이라이터",
-            "CTGR_00352": "메이크업소품",
             "CTGR_00353": "퍼프브러시세척",
             "CTGR_00354": "향수",
         }
