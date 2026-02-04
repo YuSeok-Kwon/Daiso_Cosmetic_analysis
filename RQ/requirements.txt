@@ -1,0 +1,22 @@
+# 다이소 뷰티 분석 필수 패키지
+
+# 데이터 처리
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0.0
+
+# 시각화
+matplotlib>=3.7.0
+seaborn>=0.12.0
+wordcloud>=1.9.0
+
+# 텍스트 분석
+konlpy>=0.6.0
+scikit-learn>=1.3.0
+
+# 유틸리티
+openpyxl>=3.1.0
+
+# 노트북 실행
+jupyter>=1.0.0
+ipykernel>=6.0.0
