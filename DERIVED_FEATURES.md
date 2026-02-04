@@ -1,0 +1,323 @@
+# 파생변수 설명서
+
+본 문서는 다이소 화장품 데이터 분석을 위해 생성된 파생변수들의 정의, 생성 방법, 활용 목적을 설명합니다.
+
+---
+
+## 1. Products DataFrame 파생변수
+
+### 1.1 review_count
+- **설명**: 해당 제품에 달린 총 리뷰 개수
+- **생성 방법**: reviews 테이블에서 product_code별로 count 집계
+- **데이터 타입**: int
+- **값의 범위**: 0 이상의 정수
+- **활용 목적**: 제품 인기도 측정, Engagement Score 계산에 사용
+
+### 1.2 engagement_score
+- **설명**: 제품의 전체적인 참여도를 나타내는 종합 지표
+- **생성 방법**:
+  ```
+  engagement_score = 0.15 * likes + 0.30 * shares + 0.55 * review_count
+  ```
+  - 가중치는 각 지표의 변동계수(CV)를 기반으로 결정
+  - review_count가 가장 높은 분별력을 가져 가중치 0.55 부여
+- **데이터 타입**: float
+- **값의 범위**: 0 이상의 실수
+- **활용 목적**: 제품의 종합적인 인기도 및 관심도 평가, 마케팅 우선순위 결정
+
+### 1.3 price_tier
+- **설명**: 동일 카테고리 내에서의 가격대 분류
+- **생성 방법**:
+  1. 카테고리별로 최소/최대 가격 계산
+  2. price_position 기준으로 분류
+     - Low: 0~33% (하위 가격대)
+     - Mid: 33~67% (중위 가격대)
+     - High: 67~100% (상위 가격대)
+- **데이터 타입**: str (categorical)
+- **값의 범위**: 'Low', 'Mid', 'High'
+- **활용 목적**: 가격대별 전략 수립, 동일 카테고리 내 가격 경쟁력 분석
+
+### 1.4 relative_price_ratio
+- **설명**: 카테고리 평균 대비 상대적 가격 비율
+- **생성 방법**:
+  ```
+  relative_price_ratio = price / category_avg_price
+  ```
+- **데이터 타입**: float
+- **값의 범위**: 0 이상의 실수 (1.0 = 평균 가격)
+- **활용 목적**: 카테고리 내 가격 포지셔닝 분석, 프리미엄/저가 전략 식별
+
+### 1.5 price_position
+- **설명**: 동일 카테고리 내에서의 가격 백분위 위치
+- **생성 방법**:
+  ```
+  price_position = (price - category_min_price) / (category_max_price - category_min_price)
+  ```
+  - 범위가 0인 경우 0.5로 설정
+- **데이터 타입**: float
+- **값의 범위**: 0.0 ~ 1.0
+- **활용 목적**: 카테고리 내 정확한 가격 위치 파악, 가격 경쟁력 분석
+
+### 1.6 cp_index
+- **설명**: 가성비 지표 (Cost-Performance Index)
+- **생성 방법**:
+  ```
+  cp_index = engagement_score / (price + 1)
+  ```
+  - price에 1을 더하여 0으로 나누는 것을 방지
+- **데이터 타입**: float
+- **값의 범위**: 0 이상의 실수 (높을수록 가성비 우수)
+- **활용 목적**: 가격 대비 인기도 평가, 가성비 상품 발굴
+
+### 1.7 is_god_sung_bi
+- **설명**: 갓성비 아이템 여부 (고가성비 제품 플래그)
+- **생성 방법**:
+  - cp_index가 카테고리 내 상위 20%에 해당하면 True
+- **데이터 타입**: bool
+- **값의 범위**: True, False
+- **활용 목적**: 가성비 우수 제품 필터링, 프로모션 대상 선정
+
+### 1.8 review_density
+- **설명**: 제품 출시 이후 리뷰 생성 밀도 (일평균 리뷰 수)
+- **생성 방법**:
+  ```
+  review_density = review_count / days_since_first_review
+  ```
+  - days_since_first_review가 0인 경우 0으로 설정
+- **데이터 타입**: float
+- **값의 범위**: 0 이상의 실수
+- **활용 목적**: 제품의 지속적인 인기도 측정, 신제품 모멘텀 평가
+
+---
+
+## 2. Reviews DataFrame 파생변수
+
+### 2.1 review_length
+- **설명**: 리뷰 텍스트의 문자 길이
+- **생성 방법**:
+  ```python
+  review_length = len(text)
+  ```
+  - text가 null인 경우 0
+- **데이터 타입**: int
+- **값의 범위**: 0 이상의 정수
+- **활용 목적**: 리뷰 품질 평가, 상세 리뷰 필터링
+
+### 2.2 review_length_category
+- **설명**: 리뷰 길이 카테고리 분류
+- **생성 방법**:
+  - Very Short: 0~20자
+  - Short: 21~50자
+  - Medium: 51~100자
+  - Long: 101~200자
+  - Very Long: 201자 이상
+- **데이터 타입**: str (categorical)
+- **값의 범위**: 'Very Short', 'Short', 'Medium', 'Long', 'Very Long'
+- **활용 목적**: 리뷰 길이별 분석, 리뷰 품질 세분화
+
+### 2.3 is_reorder
+- **설명**: 재구매 리뷰 여부
+- **생성 방법**:
+  ```python
+  is_reorder = text.startswith('재구매')
+  ```
+  - 리뷰 텍스트가 '재구매'로 시작하면 True
+- **데이터 타입**: bool
+- **값의 범위**: True, False
+- **활용 목적**: 고객 충성도 측정, 재구매율 분석
+
+### 2.4 user_total_reviews
+- **설명**: 해당 사용자가 작성한 총 리뷰 수
+- **생성 방법**: user별로 리뷰 개수 집계
+- **데이터 타입**: int
+- **값의 범위**: 1 이상의 정수
+- **활용 목적**: 사용자 활동성 평가, 헤비 유저 식별
+
+### 2.5 user_activity_level
+- **설명**: 사용자 활동 수준 분류
+- **생성 방법**:
+  - Light: 1~2개 리뷰
+  - Medium: 3~5개 리뷰
+  - Active: 6~10개 리뷰
+  - Heavy: 11개 이상 리뷰
+- **데이터 타입**: str (categorical)
+- **값의 범위**: 'Light', 'Medium', 'Active', 'Heavy'
+- **활용 목적**: 사용자 세분화, 활동 수준별 행동 패턴 분석
+
+### 2.6 user_avg_rating_reorder
+- **설명**: 재구매 리뷰를 작성한 사용자의 평균 평점 (재구매 리뷰만 대상)
+- **생성 방법**:
+  - is_reorder=True인 리뷰들의 평균 평점을 사용자별로 계산
+  - 재구매 리뷰가 없으면 NaN
+- **데이터 타입**: float
+- **값의 범위**: 1.0 ~ 5.0 (또는 NaN)
+- **활용 목적**: 재구매 고객의 만족도 평가
+
+### 2.7 user_rating_tendency
+- **설명**: 사용자의 평점 부여 성향 (재구매 리뷰 기준)
+- **생성 방법**:
+  - No Reorder: 재구매 리뷰 없음
+  - Always Positive: 평균 평점 4.8 이상
+  - Mostly Positive: 평균 평점 4.0~4.8
+  - Neutral: 평균 평점 3.0~4.0
+  - Critical: 평균 평점 3.0 미만
+- **데이터 타입**: str (categorical)
+- **값의 범위**: 'No Reorder', 'Always Positive', 'Mostly Positive', 'Neutral', 'Critical'
+- **활용 목적**: 사용자 성향 파악, 평점 신뢰도 평가
+
+### 2.8 is_brand_repurchase
+- **설명**: 브랜드 재구매 여부 (재구매 리뷰 중 동일 브랜드 반복 구매)
+- **생성 방법**:
+  - is_reorder=True인 리뷰 중, 동일 user가 동일 brand를 2회 이상 구매한 경우 True
+  - 재구매 리뷰가 아니면 0
+- **데이터 타입**: int (0 또는 1)
+- **값의 범위**: 0, 1
+- **활용 목적**: 브랜드 충성도 측정, 브랜드 재구매 패턴 분석
+
+### 2.9 is_category_repurchase
+- **설명**: 카테고리 재구매 여부 (재구매 리뷰 중 동일 카테고리 반복 구매)
+- **생성 방법**:
+  - is_reorder=True인 리뷰 중, 동일 user가 동일 category를 2회 이상 구매한 경우 True
+  - 재구매 리뷰가 아니면 0
+- **데이터 타입**: int (0 또는 1)
+- **값의 범위**: 0, 1
+- **활용 목적**: 카테고리별 재구매 패턴 분석, 카테고리 충성도 평가
+
+### 2.10 year
+- **설명**: 리뷰 작성 연도
+- **생성 방법**: date 컬럼에서 연도 추출
+- **데이터 타입**: int
+- **값의 범위**: 2024, 2025, 2026 등
+- **활용 목적**: 연도별 트렌드 분석
+
+### 2.11 month
+- **설명**: 리뷰 작성 월
+- **생성 방법**: date 컬럼에서 월 추출
+- **데이터 타입**: int
+- **값의 범위**: 1 ~ 12
+- **활용 목적**: 월별 계절성 분석
+
+### 2.12 day_of_week
+- **설명**: 리뷰 작성 요일 (숫자)
+- **생성 방법**: date 컬럼에서 요일 추출 (0=월요일, 6=일요일)
+- **데이터 타입**: int
+- **값의 범위**: 0 ~ 6
+- **활용 목적**: 요일별 리뷰 작성 패턴 분석
+
+### 2.13 day_name
+- **설명**: 리뷰 작성 요일명
+- **생성 방법**: date 컬럼에서 요일명 추출
+- **데이터 타입**: str
+- **값의 범위**: 'Monday', 'Tuesday', ..., 'Sunday'
+- **활용 목적**: 요일별 시각화 및 분석
+
+### 2.14 season
+- **설명**: 리뷰 작성 계절
+- **생성 방법**:
+  - 봄: 3, 4, 5월
+  - 여름: 6, 7, 8월
+  - 가을: 9, 10, 11월
+  - 겨울: 12, 1, 2월
+- **데이터 타입**: str (categorical)
+- **값의 범위**: '봄', '여름', '가을', '겨울'
+- **활용 목적**: 계절별 제품 선호도 분석, 시즌성 파악
+
+### 2.15 first_review_date
+- **설명**: 해당 제품의 첫 리뷰 날짜
+- **생성 방법**: product_code별로 가장 이른 date 추출
+- **데이터 타입**: datetime
+- **값의 범위**: 날짜 형식
+- **활용 목적**: 제품 출시 시점 추정, 신제품 식별
+
+### 2.16 days_since_first_review
+- **설명**: 첫 리뷰 이후 경과 일수
+- **생성 방법**:
+  ```
+  days_since_first_review = (current_date - first_review_date).days
+  ```
+- **데이터 타입**: int
+- **값의 범위**: 0 이상의 정수
+- **활용 목적**: 제품 수명 주기 분석, 신제품 모멘텀 평가
+
+### 2.17 is_new_product
+- **설명**: 신제품 여부 (첫 리뷰 이후 30일 이내)
+- **생성 방법**:
+  - days_since_first_review <= 30이면 True
+- **데이터 타입**: bool
+- **값의 범위**: True, False
+- **활용 목적**: 신제품 필터링, 신제품 초기 반응 분석
+
+### 2.18 is_during_promo
+- **설명**: 프로모션 기간 내 작성된 리뷰 여부
+- **생성 방법**:
+  - 리뷰 작성일이 프로모션 날짜 ±7일 이내이면 True
+  - promotion.csv의 date와 비교
+- **데이터 타입**: bool
+- **값의 범위**: True, False
+- **활용 목적**: 프로모션 효과 분석, 이벤트 영향 평가
+
+### 2.19 promo_type_category
+- **설명**: 해당 리뷰와 가장 가까운 프로모션 유형
+- **생성 방법**:
+  - 리뷰 날짜와 가장 가까운 프로모션의 타입 매칭
+  - 프로모션 타입 분류:
+    - 신상품: description에 '신상', '신제품', '뉴' 포함
+    - 할인: description에 '세일', '할인' 포함
+    - 구매이벤트: event_type이 '구매이벤트'
+    - 리뷰이벤트: event_type이 '리뷰이벤트'
+    - 기타: 위 조건에 해당하지 않음
+- **데이터 타입**: str (categorical)
+- **값의 범위**: '신상품', '할인', '구매이벤트', '리뷰이벤트', '기타', NaN
+- **활용 목적**: 프로모션 유형별 효과 분석, 마케팅 전략 수립
+
+---
+
+## 3. 파생변수 활용 가이드
+
+### 3.1 제품 인기도 분석
+- engagement_score: 종합적인 인기도 측정
+- review_count: 리뷰 기반 인기도
+- review_density: 지속적인 인기도
+
+### 3.2 가격 전략 분석
+- price_tier: 가격대별 세분화
+- price_position: 정확한 가격 포지셔닝
+- cp_index: 가성비 평가
+- is_god_sung_bi: 고가성비 제품 식별
+
+### 3.3 고객 행동 분석
+- is_reorder: 재구매 여부
+- user_activity_level: 활동 수준
+- is_brand_repurchase: 브랜드 충성도
+- is_category_repurchase: 카테고리 선호도
+
+### 3.4 시계열 분석
+- year, month, season: 시간대별 트렌드
+- is_new_product: 신제품 성과
+- days_since_first_review: 제품 수명 주기
+
+### 3.5 마케팅 효과 분석
+- is_during_promo: 프로모션 영향
+- promo_type_category: 프로모션 유형별 효과
+
+---
+
+## 4. 주의사항
+
+1. **결측치 처리**
+   - user_avg_rating_reorder: 재구매 리뷰가 없는 사용자는 NaN
+   - promo_type_category: 프로모션 기간이 아닌 리뷰는 NaN
+
+2. **데이터 의존성**
+   - is_brand_repurchase, is_category_repurchase: products 테이블과 조인 필요
+   - is_during_promo, promo_type_category: promotion.csv 필요
+
+3. **계산 제약**
+   - cp_index: price가 0인 경우 (price + 1)로 처리
+   - review_density: days_since_first_review가 0인 경우 0으로 처리
+   - price_position: 카테고리 내 가격 범위가 0인 경우 0.5로 처리
+
+4. **해석 시 유의점**
+   - engagement_score는 상대적 지표이므로 카테고리 간 직접 비교 주의
+   - is_reorder는 텍스트 기반 판단이므로 실제 재구매와 차이 발생 가능
+   - 프로모션 관련 변수는 ±7일 윈도우 기준이므로 정확도 한계 존재

@@ -1228,6 +1228,9 @@ def main():
                 category_info[middle] = set()
             category_info[middle].add(small_name)
 
+        # data 디렉토리 생성
+        os.makedirs('data', exist_ok=True)
+
         if all_products and not minimal_mode:
             # 대분류별로 제품 그룹화
             df_products = pd.DataFrame(all_products)
@@ -1236,7 +1239,9 @@ def main():
                 if len(category_products) > 0:
                     # 소분류가 1개면 소분류명, 여러 개면 'all'
                     sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                    product_file = f'data/product_{category1}_{sub_category}_{date_str}.csv'
+                    # 파일명에 사용할 수 없는 특수문자 제거
+                    sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
+                    product_file = f'data/product_{category1}_{sub_category_safe}_{date_str}.csv'
                     category_products.to_csv(product_file, index=False, encoding='utf-8-sig')
                     logger.info(f"제품 정보 저장 완료: {product_file} ({len(category_products)}개)")
                     print(f"\n제품 정보: {product_file} ({len(category_products)}개)")
@@ -1254,7 +1259,9 @@ def main():
                     category_reviews = df_reviews[df_reviews['category_1'] == category1]
                     if len(category_reviews) > 0:
                         sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                        review_file = f'data/reviews_{category1}_{sub_category}_{date_str}.csv'
+                        # 파일명에 사용할 수 없는 특수문자 제거
+                        sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
+                        review_file = f'data/reviews_{category1}_{sub_category_safe}_{date_str}.csv'
                         category_reviews.drop('category_1', axis=1).to_csv(review_file, index=False, encoding='utf-8-sig')
                         logger.info(f"리뷰 저장 완료: {review_file} ({len(category_reviews)}개)")
                         print(f"리뷰: {review_file} ({len(category_reviews)}개)")
@@ -1286,7 +1293,9 @@ def main():
                 category_ingredients = df_ingredients[df_ingredients['category_1'] == category1]
                 if len(category_ingredients) > 0:
                     sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                    ingredient_file = f'data/ingredients_{category1}_{sub_category}_{date_str}.csv'
+                    # 파일명에 사용할 수 없는 특수문자 제거
+                    sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
+                    ingredient_file = f'data/ingredients_{category1}_{sub_category_safe}_{date_str}.csv'
                     category_ingredients.drop('category_1', axis=1).to_csv(ingredient_file, index=False, encoding='utf-8-sig')
                     logger.info(f"성분 저장 완료: {ingredient_file} ({len(category_ingredients)}개)")
                     print(f"성분: {ingredient_file} ({len(category_ingredients)}개)")
@@ -1299,7 +1308,9 @@ def main():
                     category1 = list(category_info.keys())[0]
                     small_categories = category_info[category1]
                     sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                    ingredient_file = f'data/ingredients_{category1}_{sub_category}_{date_str}.csv'
+                    # 파일명에 사용할 수 없는 특수문자 제거
+                    sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
+                    ingredient_file = f'data/ingredients_{category1}_{sub_category_safe}_{date_str}.csv'
                 else:
                     ingredient_file = f'data/ingredients_unmapped_{date_str}.csv'
                 unmapped.drop('category_1', axis=1, errors='ignore').to_csv(ingredient_file, index=False, encoding='utf-8-sig')
