@@ -1,0 +1,236 @@
+"""
+Batch labeling with ChatGPT for ABSA
+"""
+import json
+import pandas as pd
+from pathlib import Path
+from typing import Optional
+from tqdm import tqdm
+import sys
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from openai_client import OpenAIClient
+
+
+class ABSALabeler:
+    """
+    Batch labeler for ABSA using ChatGPT.
+    Supports incremental saving and resumption.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini",
+        save_interval: int = 100
+    ):
+        """
+        Args:
+            model: OpenAI model to use
+            save_interval: Save cache every N requests
+        """
+        self.model = model
+        self.save_interval = save_interval
+        self.client = OpenAIClient()
+
+    def label_batch(
+        self,
+        input_path: Path,
+        output_path: Path,
+        resume: bool = True
+    ) -> pd.DataFrame:
+        """
+        Label a batch of reviews.
+
+        Args:
+            input_path: Path to input CSV
+            output_path: Path to output JSONL
+            resume: Whether to resume from existing output
+
+        Returns:
+            Dataframe with labeled reviews
+        """
+        # Load input
+        print(f"Loading reviews from: {input_path}")
+        df = pd.read_csv(input_path)
+        print(f"Loaded {len(df):,} reviews")
+
+        # Check required columns
+        required_columns = ['text', 'product_code', 'rating']
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
+
+        # Load existing results if resuming
+        existing_results = {}
+        if resume and output_path.exists():
+            print(f"Resuming from: {output_path}")
+            with open(output_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    result = json.loads(line)
+                    # Use index as key (assuming first field is index)
+                    if 'index' in result:
+                        existing_results[result['index']] = result
+
+            print(f"Found {len(existing_results):,} existing results")
+
+        # Prepare output file
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = 'a' if resume and output_path.exists() else 'w'
+
+        # Label reviews
+        print(f"\nStarting labeling with model: {self.model}")
+        print(f"Save interval: {self.save_interval}")
+        print(f"Estimated cost: ${len(df) * 0.0003:.2f} - ${len(df) * 0.0005:.2f}\n")
+
+        labeled_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        with open(output_path, mode, encoding='utf-8') as f:
+            for idx, row in tqdm(df.iterrows(), total=len(df), desc="Labeling"):
+                # Skip if already labeled
+                if idx in existing_results:
+                    skipped_count += 1
+                    continue
+
+                try:
+                    # Label review
+                    result = self.client.label_review(
+                        review_text=row['text'],
+                        product_code=row['product_code'],
+                        rating=row['rating'],
+                        model=self.model
+                    )
+
+                    # Create output record
+                    output_record = {
+                        'index': idx,
+                        'text': row['text'],
+                        'product_code': row['product_code'],
+                        'rating': row['rating'],
+                        'sentiment': result.sentiment,
+                        'sentiment_score': result.sentiment_score,
+                        'aspect_labels': result.aspect_labels,
+                        'evidence': result.evidence,
+                        'summary': result.summary,
+                        'model': result.model,
+                        'tokens_input': result.tokens_input,
+                        'tokens_output': result.tokens_output,
+                        'cost': result.cost
+                    }
+
+                    # Copy other columns if present
+                    for col in df.columns:
+                        if col not in output_record:
+                            output_record[col] = row[col]
+
+                    # Write to file
+                    f.write(json.dumps(output_record, ensure_ascii=False) + '\n')
+                    f.flush()
+
+                    labeled_count += 1
+
+                    # Periodic status update
+                    if labeled_count % self.save_interval == 0:
+                        total_cost = self.client.get_total_cost()
+                        total_requests = self.client.get_total_requests()
+                        avg_cost = total_cost / total_requests if total_requests > 0 else 0
+                        print(f"\n[Progress] Labeled: {labeled_count:,}, "
+                              f"Skipped: {skipped_count:,}, "
+                              f"Errors: {error_count:,}")
+                        print(f"[Cost] Total: ${total_cost:.2f}, "
+                              f"Avg: ${avg_cost:.4f}/request")
+                        self.client.save_cache()
+
+                except Exception as e:
+                    print(f"\nError labeling review {idx}: {e}")
+                    error_count += 1
+                    continue
+
+        # Final statistics
+        total_cost = self.client.get_total_cost()
+        total_requests = self.client.get_total_requests()
+
+        print("\n" + "="*60)
+        print("LABELING COMPLETE")
+        print("="*60)
+        print(f"Total labeled: {labeled_count:,}")
+        print(f"Skipped (cached): {skipped_count:,}")
+        print(f"Errors: {error_count:,}")
+        print(f"Total cost: ${total_cost:.2f}")
+        print(f"Total requests: {total_requests:,}")
+        print(f"Average cost per request: ${total_cost/total_requests:.4f}")
+        print(f"Output saved to: {output_path}")
+        print("="*60)
+
+        # Load and return results
+        results = []
+        with open(output_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                results.append(json.loads(line))
+
+        results_df = pd.DataFrame(results)
+
+        # Validate results
+        self._validate_results(results_df)
+
+        return results_df
+
+    def _validate_results(self, df: pd.DataFrame):
+        """Validate labeling results"""
+        print("\n" + "="*60)
+        print("LABELING VALIDATION")
+        print("="*60)
+
+        # Sentiment distribution
+        print("\nSentiment distribution:")
+        sentiment_dist = df['sentiment'].value_counts(normalize=True).sort_index()
+        for sentiment, ratio in sentiment_dist.items():
+            print(f"  {sentiment}: {ratio*100:.1f}%")
+
+        # Sentiment score distribution
+        print("\nSentiment score statistics:")
+        print(df['sentiment_score'].describe())
+
+        # Aspect distribution
+        print("\nAspect frequency:")
+        all_aspects = []
+        for aspects in df['aspect_labels']:
+            if isinstance(aspects, list):
+                all_aspects.extend(aspects)
+
+        aspect_counts = pd.Series(all_aspects).value_counts()
+        for aspect, count in aspect_counts.items():
+            print(f"  {aspect}: {count:,} ({count/len(df)*100:.1f}%)")
+
+        # Aspects per review
+        df['num_aspects'] = df['aspect_labels'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+        print("\nAspects per review:")
+        print(df['num_aspects'].describe())
+
+        # Token statistics
+        print("\nToken usage:")
+        print(f"  Total input tokens: {df['tokens_input'].sum():,}")
+        print(f"  Total output tokens: {df['tokens_output'].sum():,}")
+        print(f"  Avg input tokens: {df['tokens_input'].mean():.1f}")
+        print(f"  Avg output tokens: {df['tokens_output'].mean():.1f}")
+
+        # Cost statistics
+        print("\nCost statistics:")
+        print(f"  Total cost: ${df['cost'].sum():.2f}")
+        print(f"  Avg cost per review: ${df['cost'].mean():.4f}")
+
+        # Sentiment-rating consistency
+        print("\nSentiment-rating consistency:")
+        rating_sentiment_map = {
+            1: 'negative', 2: 'negative',
+            3: 'neutral',
+            4: 'positive', 5: 'positive'
+        }
+        df['expected_sentiment'] = df['rating'].map(rating_sentiment_map)
+        consistency = (df['sentiment'] == df['expected_sentiment']).mean()
+        print(f"  Consistency rate: {consistency*100:.1f}%")
+
+        print("="*60)
