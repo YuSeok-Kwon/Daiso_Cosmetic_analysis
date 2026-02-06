@@ -44,3 +44,9 @@ CLAUDE.md
 
 # Cache
 cache/
+
+# Backup files
+*.bak
+
+# Temp folders
+땃쥐/
