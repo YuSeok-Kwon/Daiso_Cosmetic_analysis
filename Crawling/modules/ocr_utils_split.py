@@ -121,7 +121,7 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
         # 1. 성분표 영역 자동 크롭 (선택적)
         if auto_crop:
             try:
-                from ingredient_detector import crop_ingredient_region
+                from .ingredient_detector import crop_ingredient_region
                 original_image = image
                 image = crop_ingredient_region(image, auto_detect=True, expand_margin=30)
 
@@ -134,7 +134,7 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
         clova_text = None
         if use_clova:
             try:
-                from clova_ocr import get_clova_client
+                from .clova_ocr import get_clova_client
                 clova_client = get_clova_client()
 
                 if clova_client.is_available():

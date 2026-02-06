@@ -17,8 +17,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from config import DAISO_BEAUTY_CATEGORIES
 from modules.ocr_utils_split import extract_text_from_image_url_split
+from modules.halal_vegan_checker import check_halal_vegan_status
+from modules.ingredient_parser import (
+    normalize_ingredient_name,
+    is_valid_ingredient,
+    extract_from_text
+)
 from utils import setup_logger, get_date_string
-from modules.image_preprocessor import preprocess_for_korean_ocr
 
 # 로거 설정
 logger = setup_logger('daiso_beauty_crawler', 'daiso_beauty_crawler.log')
@@ -28,453 +33,17 @@ BASE_URL = "https://www.daisomall.co.kr"
 MAX_SCROLLS = 10
 user_id_map = defaultdict(lambda: f"user_{len(user_id_map)+1:04d}")
 
-# ============================================================================
-# 성분 분석 고도화: 데이터베이스 및 API 검증 시스템
-# ============================================================================
-
-# 할랄/비건 인증 정보
-# 동물성 성분 데이터베이스 (비건/할랄 부적합)
-ANIMAL_DERIVED_INGREDIENTS = {
-    # 확실한 동물 유래 성분 (비건 불가)
-    '라놀린', 'Lanolin', '양모지', '콜라겐', 'Collagen',
-    '케라틴', 'Keratin', '밀크프로틴', 'MilkProtein', '실크프로틴', 'SilkProtein',
-    '꿀', 'Honey', '밀랍', 'Beeswax', '프로폴리스', 'Propolis',
-    '로열젤리', 'RoyalJelly', '비즈왁스',
-    '카민', '코치닐', 'Carmine', '캐비어', 'Caviar', '펄', 'Pearl',
-    '젤라틴', 'Gelatin', '카제인', 'Casein',
-    '키토산', 'Chitosan', '콘드로이틴', 'Chondroitin',
-    '엘라스틴', 'Elastin', '스쿠알렌', 'Squalene',  # 상어 유래
-    '뮤스크', 'Musk', '앰버그리스', 'Ambergris',
-    '타우린', 'Taurine', '알부민', 'Albumin',
-}
-
-# 할랄 부적합 성분 (알코올, 돼지 유래 등)
-HARAM_INGREDIENTS = {
-    # 알코올류 (할랄 금지)
-    '에탄올', '알코올', 'Alcohol', 'Ethanol',
-    '알코올변성', '변성알코올', 'AlcoholDenat', 'DenaturatedAlcohol',
-    '이소프로필알코올', 'IsopropylAlcohol',
-    'SD알코올', 'SDAlcohol',
-
-    # 돼지 유래 성분 (할랄 절대 금지)
-    '돼지콜라겐', 'PorkCollagen', '돼지젤라틴', 'PorkGelatin',
-    '포신글리콜', 'Placenta',  # 돼지 태반
-
-    # 주류 유래
-    '와인추출물', 'WineExtract', '맥주효모', 'BeerYeast',
-}
-
-# 애매한 성분 (식물성/동물성 혼재 - 원료 확인 필요)
-AMBIGUOUS_INGREDIENTS = {
-    '글리세린', 'Glycerin', 'Glycerol',  # 대부분 식물성 (야자유, 코코넛)
-    '스쿠알란', 'Squalane',  # 올리브 또는 상어 유래
-    '레시틴', 'Lecithin',  # 대두 또는 계란 유래
-    '스테아르산', 'StearicAcid',  # 식물 또는 동물 지방
-    '세라마이드', 'Ceramide',  # 합성 또는 동물 유래
-    '콜레스테롤', 'Cholesterol',  # 양모지 또는 합성
-    '히알루론산', 'HyaluronicAcid',  # 닭벼슬 또는 발효 (현대는 대부분 발효)
-    '히알루론산나트륨', 'SodiumHyaluronate',  # 발효 유래 (대부분 비건)
-    '토코페롤', 'Tocopherol',  # 비타민E, 대부분 식물성
-}
-
-# 비건 인증 가능 성분 (식물성 확정)
-VEGAN_SAFE_INGREDIENTS = {
-    # 식물 추출물
-    '알로에베라잎추출물', 'AloeVeraLeafExtract', '녹차추출물', 'GreenTeaExtract',
-    '병풀추출물', 'CentellAAssiaticaExtract', '감초추출물', 'LicoriceExtract',
-    '카모마일추출물', 'ChamomileExtract', '라벤더추출물', 'LavenderExtract',
-    '센텔라아시아티카추출물', '감나무잎추출물', '카카오추출물',
-    '포도추출물', '포도주추출물', '아사이팜열매추출물', '아사이베리추출물',
-    '블루베리추출물', '로우스위트블루베리추출물', '라즈베리추출물',
-    '딸기추출물', '서양산딸기추출물', '스트로베리추출물', '비치스트로베리추출물',
-    '자작나무추출물', '자작나무싹추출물', '만주자작나무싹추출물',
-    '개암추출물', '유럽개암싹추출물', '올리브나무싹추출물',
-    '호두나무잎추출물', '초피나무열매추출물', '할미꽃추출물',
-    '우스니아추출물', '커피콩추출물', '커피추출물',
-
-    # 식물성 오일
-    '호호바오일', 'JojobaOil', '시어버터', 'SheaButter',
-    '코코넛오일', 'CoconutOil', '올리브오일', 'OliveOil',
-    '아보카도오일', 'AvocadoOil', '해바라기씨오일', 'SunflowerSeedOil',
-    '아르간오일', 'ArganOil', '아몬드오일', 'AlmondOil',
-    '포도씨오일', 'GrapeSeedOil', '동백오일', 'CamelliaOil',
-    '로즈힙오일', 'RosehipOil', '마카다미아오일', 'MacadamiaOil',
-
-    # 합성 성분 (비동물성)
-    '정제수', 'Water', 'Aqua',
-    '부틸렌글라이콜', 'ButyleneGlycol',
-    '디프로필렌글라이콜', 'DipropyleneGlycol',
-    '프로판다이올', 'Propanediol',
-    '페녹시에탄올', 'Phenoxyethanol',
-    '소듐폴리아크릴레이트', 'SodiumPolyacrylate',
-    '잔탄검', 'XanthanGum',
-    '카보머', 'Carbomer',
-    '티타늄디옥사이드', 'TitaniumDioxide',
-    '징크옥사이드', 'ZincOxide',
-    '나이아신아마이드', 'Niacinamide',
-    '토코페롤', 'Tocopherol',  # 비타민E, 식물 유래
-    '소듐하이알루로네이트', 'SodiumHyaluronate',  # 발효 유래
-    '벤질글라이콜', 'BenzylGlycol',
-    '에틸헥실글리세린', 'EthylhexylGlycerin',
-
-    # 미네랄
-    '마이카', 'Mica', '운모', '산화철', 'IronOxide',
-}
-
-# 알려진 화장품 성분 데이터베이스 (식약처 기준)
-KNOWN_INGREDIENTS = {
-    # 물/용매
-    '정제수', '물', 'Water', 'Aqua',
-
-    # 보습제
-    '글리세린', 'Glycerin', '부틸렌글라이콜', 'ButyleneGlycol',
-    '프로판다이올', 'Propanediol', '소르비톨', 'Sorbitol',
-    '펜틸렌글라이콜', '1,2-헥산다이올', 'Dipropyleneglycol',
-    '프로필렌글라이콜', 'PropyleneGlycol',
-
-    # 유화제
-    '폴리소르베이트60', '폴리소르베이트80', '레시틴', 'Lecithin',
-    '스테아르산', '세틸알코올', '스테아릴알코올',
-
-    # 증점제
-    '카보머', 'Carbomer', '잔탄검', '히알루론산나트륨',
-    '카라기난', '셀룰로오스검', '아크릴레이트코폴리머',
-
-    # 방부제
-    '페녹시에탄올', 'Phenoxyethanol', '메틸파라벤', '에틸파라벤',
-    '프로필파라벤', '부틸파라벤', '소듐벤조에이트', '포타슘소르베이트',
-
-    # 항산화제
-    '토코페롤', 'Tocopherol', '아스코르브산', '부틸하이드록시톨루엔',
-    'BHT', 'BHA',
-
-    # UV 필터
-    '에틸헥실메톡시신나메이트', '티타늄디옥사이드', '징크옥사이드',
-    '옥토크릴렌', '아보벤존', '호모살레이트',
-
-    # 색소
-    '산화철', '황산화철', '적산화철', '흑산화철',
-    'CI77891', 'CI77491', 'CI77492', 'CI77499',
-    '운모티타늄', '마이카', 'Mica',
-
-    # 향료
-    '향료', 'Fragrance', 'Parfum',
-
-    # 식물추출물
-    '알로에베라잎추출물', '녹차추출물', '병풀추출물',
-    '감초추출물', '카모마일추출물', '라벤더추출물',
-    '센텔라아시아티카추출물',
-
-    # 실리콘류
-    '다이메치콘', 'Dimethicone', '사이클로펜타실록산',
-    '사이클로헥사실록산', '다이메치콘올', '아모다이메치콘',
-
-    # 오일/왁스
-    '스쿠알란', 'Squalane', '호호바오일', '시어버터',
-    '미네랄오일', 'MineralOil', '세레신', '마이크로크리스탈린왁스', '파라핀',
-}
-
-# OCR 오인식 패턴 및 수정 맵
-OCR_CORRECTIONS = {
-    # 자주 나오는 OCR 오류 패턴
-    '메칠': '메틸',
-    '에칠': '에틸',
-    '부칠': '부틸',
-    '프로필': '프로필',
-    '다이 메치콘': '다이메치콘',
-    '글리세 린': '글리세린',
-    '페녹시 에탄올': '페녹시에탄올',
-    '디옥사이 드': '디옥사이드',
-    '파라 벤': '파라벤',
-    '이트륨': '이트',
-    '콜산': '콜',
-}
-
-# 화학 성분 패턴 (정규표현식)
-INGREDIENT_PATTERNS = [
-    r'.+이트$', r'.+올$', r'.+산$', r'.+염$',
-    r'.+레이트$', r'.+라이드$', r'.+나이트$',
-    r'.+민$', r'.+틴$', r'.+린$',
-    r'.+옥사이드$', r'.+추출물$', r'.+오일$',
-    r'.+왁스$', r'.+파라벤$', r'.+글라이콜$',
-    r'.+다이올$', r'^CI\d+$',
-]
-
-# 노이즈 패턴 (성분이 아님)
-NOISE_PATTERNS = [
-    r'.*(사용|바르|피부|효과|개선|미백|주름|보습|수분|영양|진정|바릅니다|발라주세요).*',
-    r'^SPF\d+$', r'^PA\+*$', r'^\d+ml$', r'^\d+g$',
-    r'.*(합니다|됩니다|입니다|해요|돼요|예요|있다|없다|한다|된다)$',
-    r'^(을|를|이|가|은|는|도|만|의|에|로|으로|와|과|하고)$',
-]
-
-# 성분 키워드 (실제 성분 리스트를 나타내는 키워드)
-INGREDIENT_KEYWORDS = [
-    "전성분", "화장품법", "모든 성분",
-    "화장품법에 따라", "기재 표시", "표시하여야",
-    "성분:",  # 추가: "성분:" 형식
-    "INGREDIENTS", "Ingredients",  # 영어 키워드 추가
-]
-
-# 성분 섹션이 아닌 키워드 (성분이라는 단어가 포함되어도 제외해야 할 섹션)
-INGREDIENT_EXCLUDE_SECTIONS = [
-    "상품 특징", "상품 설명", "제품 설명", "특징",
-    "사용 방법", "주의 사항", "보관 방법",
-    "HOWTOUSE", "상품특징", "제품특징"
-]
-
-# 성분 추출 중단 키워드 (성분 이후 나오는 설명문)
-INGREDIENT_STOP_KEYWORDS = [
-    '※', '주의사항', '경고', '사용방법', '보관방법', '제조국',
-    '용법', '용량', '효능', '효과',
-    '본품', '적당량', '취해', '골고루', '바른다', '식품의약품안전처'
-]
-
-# 성분이 아닌 불용어 (단독으로 나오면 제외)
-INGREDIENT_STOPWORDS = [
-    '기재하여야', '하는', '등', '하여야하는', '기재·표시',
-    '자외선', '차단', '심사', '유무', '개선', '미백', '주름',
-    '피부', '보호', '도움', '효능', '효과', '용법', '용량',
-    '본품', '적당량', '바른다', '준다', '으로부터', '를',
-    '한다', '합니다', '된다', '됩니다', '있다', '없다',  # 어미 추가
-    '보호한다', '개선한다', '도움을준다', '미백에도움',  # 조합 추가
-]
-
-
-def parse_count(text: str) -> int:
-    """숫자 파싱"""
-    try:
-        return int(text.replace(",", "").replace("+", "").strip() or 0)
-    except:
-        return 0
-
-
-def extract_rating(text: str):
-    """평점 추출"""
-    match = re.search(r"(\d+)", text)
-    return int(match.group(1)) if match else None
-
-
-def normalize_ingredient_name(name: str) -> str:
-    """성분명 정규화 및 OCR 오류 수정"""
-    # 1. 공백 제거
-    name = name.replace(' ', '')
-
-    # 2. OCR 오류 수정
-    for wrong, correct in OCR_CORRECTIONS.items():
-        name = name.replace(wrong, correct)
-
-    # 3. 괄호 내용 제거 (농도 표시 등)
-    name = re.sub(r'\([^)]*\)', '', name)
-    name = re.sub(r'\[[^\]]*\]', '', name)
-
-    # 4. 특수문자 제거 (±, *, 등)
-    name = re.sub(r'[±*★☆※]', '', name)
-
-    # 5. 앞뒤 특수문자 제거
-    name = re.sub(r'^[^\w가-힣]+|[^\w가-힣]+$', '', name, flags=re.UNICODE)
-
-    return name.strip()
-
-
-def is_valid_ingredient(text: str, known_db: set = KNOWN_INGREDIENTS) -> tuple:
-    """
-    성분명 유효성 검증 (고도화 버전)
-
-    Returns:
-        (is_valid: bool, confidence: float, reason: str)
-    """
-    if not text or len(text.strip()) < 2:
-        return False, 0.0, "too_short"
-
-    text = text.strip()
-
-    # 레벨 1: 알려진 성분 데이터베이스 매칭 (100% 확신)
-    if text in known_db:
-        return True, 1.0, "known_ingredient"
-
-    # 레벨 2: 노이즈 패턴 매칭 (100% 제외)
-    for pattern in NOISE_PATTERNS:
-        if re.match(pattern, text):
-            return False, 0.0, f"noise"
-
-    # 레벨 3: 불용어 체크 (기존 로직 유지)
-    if text in INGREDIENT_STOPWORDS:
-        return False, 0.0, "stopword"
-
-    for stopword in INGREDIENT_STOPWORDS:
-        if stopword in text:
-            return False, 0.0, "contains_stopword"
-
-    # 레벨 4: 화학 성분 패턴 매칭 (80% 확신)
-    for pattern in INGREDIENT_PATTERNS:
-        if re.match(pattern, text):
-            if len(text) >= 3:
-                return True, 0.8, "pattern_match"
-
-    # 레벨 5: 영문+숫자 조합 (화학식) (70% 확신)
-    if re.search(r'[A-Z][a-z]*\d', text) and len(text) >= 4:
-        return True, 0.7, "chemical_formula"
-
-    # 레벨 6: 영문 대문자 시작 (60% 확신)
-    if re.match(r'^[A-Z][a-z]{2,}', text):
-        return True, 0.6, "capitalized_word"
-
-    # 기타 (40% 미만은 제외)
-    return False, 0.3, "no_pattern_match"
-
-
-def clean_ingredient_text(text: str) -> str:
-    """성분명 정제 (기존 함수 유지)"""
-    # 앞뒤 공백 제거
-    text = text.strip()
-
-    # 괄호 제거 (예: "보호한다(SPF35" → "보호한다SPF35")
-    text = re.sub(r'[\(\)\[\]]', '', text)
-
-    # 앞뒤 특수문자 제거
-    text = re.sub(r'^[^\w가-힣]+|[^\w가-힣]+$', '', text)
-
-    # ± 기호 제거 (예: "±황색산화철" → "황색산화철")
-    text = text.replace('±', '')
-
-    # 연속된 공백 제거
-    text = re.sub(r'\s+', '', text)
-
-    return text
-
-
-def extract_from_text(text: str, source: str) -> list:
-    """텍스트에서 성분 추출 (다중 소스 지원)"""
-    ingredients = []
-
-    lines = text.split('\n')
-    in_ingredients = False
-    ingredient_text = []
-
-    for idx, line in enumerate(lines):
-        line = line.strip()
-
-        # 제외 섹션
-        if any(exclude in line for exclude in INGREDIENT_EXCLUDE_SECTIONS):
-            in_ingredients = False
-            continue
-
-        # 성분 섹션 시작
-        if any(kw in line for kw in INGREDIENT_KEYWORDS):
-            in_ingredients = True
-
-            # 키워드 제거
-            for kw in INGREDIENT_KEYWORDS:
-                line = line.replace(kw, '')
-
-            line = line.strip()
-            if line:
-                ingredient_text.append(line)
-            continue
-
-        # 성분 섹션 종료
-        if in_ingredients:
-            if any(stop in line for stop in INGREDIENT_STOP_KEYWORDS):
-                break
-
-            if line:
-                ingredient_text.append(line)
-
-    # 파싱: 쉼표, 공백 모두 고려
-    full_text = ' '.join(ingredient_text)
-
-    # 1차: 쉼표로 분리
-    parts = full_text.split(',')
-
-    for part in parts:
-        part = part.strip()
-
-        # 2차: 공백으로 분리 (단, 2단어 이상은 제외)
-        if ' ' in part and part.count(' ') <= 2:
-            sub_parts = part.split()
-            for sub in sub_parts:
-                if len(sub) >= 2:
-                    ingredients.append({'ingredient': sub, 'source': source})
-        else:
-            if len(part) >= 2:
-                ingredients.append({'ingredient': part, 'source': source})
-
-    return ingredients
-
-
-def check_halal_vegan_status(ingredient: str) -> dict:
-    """
-    성분의 할랄/비건 적합성 판정
-
-    Returns:
-        dict with: is_vegan, is_halal, warning
-    """
-    result = {
-        'is_vegan': 'Unknown',
-        'is_halal': 'Unknown',
-        'warning': ''
-    }
-
-    # 비건 체크 (우선순위: 확정 > 애매 > 불가)
-    if ingredient in VEGAN_SAFE_INGREDIENTS:
-        result['is_vegan'] = 'Yes'
-    elif ingredient in AMBIGUOUS_INGREDIENTS:
-        # 글리세린, 히알루론산 등 - 현대 화장품은 대부분 식물성/발효
-        result['is_vegan'] = 'Likely'  # 조건부 가능
-        result['warning'] = '원료 확인 권장 (대부분 식물성/발효)'
-    elif ingredient in ANIMAL_DERIVED_INGREDIENTS:
-        result['is_vegan'] = 'No'
-        result['warning'] = '동물성 유래 성분'
-
-    # 할랄 체크
-    if ingredient in HARAM_INGREDIENTS:
-        result['is_halal'] = 'No'
-        result['warning'] = result['warning'] + ' / 알코올 함유' if result['warning'] else '알코올 함유'
-    elif ingredient in ANIMAL_DERIVED_INGREDIENTS and '돼지' not in ingredient:
-        result['is_halal'] = 'Questionable'
-        result['warning'] = result['warning'] + ' / 원료 확인 필요' if result['warning'] else '원료 확인 필요'
-    elif ingredient in AMBIGUOUS_INGREDIENTS:
-        # 애매한 성분은 할랄도 원료 확인 필요
-        if not result['warning']:
-            result['warning'] = '원료 확인 권장'
-
-    return result
-
 
 def extract_ingredients_multi_source(driver, product_code: str, product_name: str) -> list:
     """
     다중 소스에서 성분 추출 및 교차 검증 + 할랄/비건 판정
 
     Returns:
-        list of dicts with: product_code, ingredient, confidence, sources, reason, is_vegan, is_halal, warning
+        list of dicts with: product_id, name, ingredient, can_halal, can_vegan, not_halal
     """
     all_ingredients = {}  # {성분명: {confidence, sources[], reason}}
 
-    # 소스 1: HTML 텍스트
-    try:
-        editor_content = driver.find_element(By.CSS_SELECTOR, "div.editor-content")
-        html_text = editor_content.text
-        html_ingredients = extract_from_text(html_text, source="HTML")
-
-        for ing in html_ingredients:
-            name = normalize_ingredient_name(ing['ingredient'])
-            is_valid, conf, reason = is_valid_ingredient(name)
-
-            if is_valid and conf >= 0.5:  # 50% 이상만
-                if name not in all_ingredients:
-                    all_ingredients[name] = {'confidence': conf, 'sources': [ing['source']], 'reason': reason}
-                else:
-                    # 같은 성분이 여러 소스에서 발견되면 신뢰도 증가
-                    all_ingredients[name]['sources'].append(ing['source'])
-                    all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.1)
-
-        logger.info(f"HTML에서 {len(html_ingredients)}개 성분 추출 → 유효: {len([k for k in all_ingredients if 'HTML' in all_ingredients[k]['sources']])}개")
-
-    except Exception as e:
-        logger.debug(f"HTML 텍스트 추출 실패: {str(e)}")
-
-    # 소스 2: Picture alt 속성
+    # 소스 1: Picture alt 속성
     try:
         pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img")
 
@@ -495,13 +64,13 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
                             all_ingredients[name]['sources'].append(ing['source'])
                             all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.1)
 
-        logger.info(f"ALT에서 추가 성분 발견: 총 {len([k for k in all_ingredients if any('ALT' in s for s in all_ingredients[k]['sources'])])}개")
+        logger.info(f"ALT에서 성분 발견: 총 {len([k for k in all_ingredients if any('ALT' in s for s in all_ingredients[k]['sources'])])}개")
 
     except Exception as e:
         logger.debug(f"ALT 텍스트 추출 실패: {str(e)}")
 
-    # 소스 3: OCR (성분이 적을 때만)
-    if len(all_ingredients) < 5:
+    # 소스 2: OCR (성분이 적을 때만 - 10개 미만)
+    if len(all_ingredients) < 10:
         try:
             pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img")
 
@@ -551,30 +120,28 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
             # 할랄/비건 적합성 판정
             halal_vegan = check_halal_vegan_status(name)
 
+            # 할랄 부적합 성분명 추출 (is_halal이 'No'인 경우)
+            not_halal_ingredient = name if halal_vegan['is_halal'] == 'No' else ''
+
             final_ingredients.append({
-                'product_code': product_code,
+                'product_id': product_code,
+                'name': product_name,
                 'ingredient': name,
-                'confidence': round(final_conf, 2),
-                'sources': ','.join(info['sources']),
-                'reason': info['reason'],
-                'is_vegan': halal_vegan['is_vegan'],
-                'is_halal': halal_vegan['is_halal'],
-                'warning': halal_vegan['warning']
+                'can_halal': halal_vegan['is_halal'],
+                'can_vegan': halal_vegan['is_vegan'],
+                'not_halal': not_halal_ingredient
             })
 
-    # 신뢰도 높은 순으로 정렬
-    final_ingredients.sort(key=lambda x: x['confidence'], reverse=True)
+    # 성분명 기준으로 정렬
+    final_ingredients.sort(key=lambda x: x['ingredient'])
 
-    logger.info(f"최종 성분: {len(final_ingredients)}개 (신뢰도 50% 이상)")
-    logger.info(f"  - 신뢰도 90% 이상: {len([x for x in final_ingredients if x['confidence'] >= 0.9])}개")
-    logger.info(f"  - 신뢰도 70-90%: {len([x for x in final_ingredients if 0.7 <= x['confidence'] < 0.9])}개")
-    logger.info(f"  - 신뢰도 50-70%: {len([x for x in final_ingredients if 0.5 <= x['confidence'] < 0.7])}개")
+    logger.info(f"최종 성분: {len(final_ingredients)}개")
 
     # 할랄/비건 통계
-    vegan_count = len([x for x in final_ingredients if x['is_vegan'] == 'Yes'])
-    non_vegan_count = len([x for x in final_ingredients if x['is_vegan'] == 'No'])
-    halal_questionable = len([x for x in final_ingredients if x['is_halal'] == 'Questionable'])
-    haram_count = len([x for x in final_ingredients if x['is_halal'] == 'No'])
+    vegan_count = len([x for x in final_ingredients if x['can_vegan'] == 'Yes'])
+    non_vegan_count = len([x for x in final_ingredients if x['can_vegan'] == 'No'])
+    halal_questionable = len([x for x in final_ingredients if x['can_halal'] == 'Questionable'])
+    haram_count = len([x for x in final_ingredients if x['can_halal'] == 'No'])
 
     logger.info(f"할랄/비건 분석:")
     logger.info(f"  - 비건 적합: {vegan_count}개 | 부적합: {non_vegan_count}개")
@@ -997,19 +564,19 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
             # 할랄/비건 인증 가능 여부 판정
             if ingredients:
                 # 비건 판정: 동물성 성분이 하나라도 있으면 No
-                non_vegan_ingredients = [ing for ing in ingredients if ing.get('is_vegan') == 'No']
+                non_vegan_ingredients = [ing for ing in ingredients if ing.get('can_vegan') == 'No']
                 if non_vegan_ingredients:
                     product['can_비건'] = 'No'
                     logger.info(f"비건 부적합: {len(non_vegan_ingredients)}개 동물성 성분 발견")
-                elif any(ing.get('is_vegan') == 'Unknown' for ing in ingredients):
+                elif any(ing.get('can_vegan') == 'Unknown' for ing in ingredients):
                     product['can_비건'] = 'Unknown'
                 else:
                     product['can_비건'] = 'Yes'
                     logger.info("비건 인증 가능")
 
                 # 할랄 판정: 부적합 성분이 하나라도 있으면 No
-                haram_ingredients = [ing for ing in ingredients if ing.get('is_halal') == 'No']
-                questionable_ingredients = [ing for ing in ingredients if ing.get('is_halal') == 'Questionable']
+                haram_ingredients = [ing for ing in ingredients if ing.get('can_halal') == 'No']
+                questionable_ingredients = [ing for ing in ingredients if ing.get('can_halal') == 'Questionable']
 
                 if haram_ingredients:
                     product['can_할랄인증'] = 'No'
@@ -1017,7 +584,7 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
                 elif questionable_ingredients:
                     product['can_할랄인증'] = 'Questionable'
                     logger.info(f"할랄 원료확인 필요: {len(questionable_ingredients)}개 의심 성분")
-                elif any(ing.get('is_halal') == 'Unknown' for ing in ingredients):
+                elif any(ing.get('can_halal') == 'Unknown' for ing in ingredients):
                     product['can_할랄인증'] = 'Unknown'
                 else:
                     product['can_할랄인증'] = 'Yes'
@@ -1218,104 +785,35 @@ def main():
                     logger.error(str(e))
                     continue
 
-        # CSV 저장 - 대분류별로 분리
+        # CSV 저장 - 하나의 파일로 통합
         date_str = get_date_string()
-
-        # 선택된 카테고리에서 대분류별 소분류 정보 추출
-        category_info = {}  # {대분류: set(소분류들)}
-        for middle, middle_code, small_code, small_name in categories:
-            if middle not in category_info:
-                category_info[middle] = set()
-            category_info[middle].add(small_name)
 
         # data 디렉토리 생성
         os.makedirs('data', exist_ok=True)
 
+        # 제품 정보 저장 (하나의 파일)
         if all_products and not minimal_mode:
-            # 대분류별로 제품 그룹화
             df_products = pd.DataFrame(all_products)
-            for category1, small_categories in category_info.items():
-                category_products = df_products[df_products['category_1'] == category1]
-                if len(category_products) > 0:
-                    # 소분류가 1개면 소분류명, 여러 개면 'all'
-                    sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                    # 파일명에 사용할 수 없는 특수문자 제거
-                    sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
-                    product_file = f'data/product_{category1}_{sub_category_safe}_{date_str}.csv'
-                    category_products.to_csv(product_file, index=False, encoding='utf-8-sig')
-                    logger.info(f"제품 정보 저장 완료: {product_file} ({len(category_products)}개)")
-                    print(f"\n제품 정보: {product_file} ({len(category_products)}개)")
+            product_file = f'data/products_{date_str}.csv'
+            df_products.to_csv(product_file, index=False, encoding='utf-8-sig')
+            logger.info(f"제품 정보 저장 완료: {product_file} ({len(df_products)}개)")
+            print(f"\n제품 정보: {product_file} ({len(df_products)}개)")
 
+        # 리뷰 저장 (하나의 파일)
         if all_reviews:
-            # 리뷰는 대분류별로 분리 (product_code로 매핑)
             df_reviews = pd.DataFrame(all_reviews)
-            if not minimal_mode and all_products:
-                df_products = pd.DataFrame(all_products)
-                product_category_map = dict(zip(df_products['product_code'], df_products['category_1']))
+            review_file = f'data/reviews_{date_str}.csv'
+            df_reviews.to_csv(review_file, index=False, encoding='utf-8-sig')
+            logger.info(f"리뷰 저장 완료: {review_file} ({len(df_reviews)}개)")
+            print(f"리뷰: {review_file} ({len(df_reviews)}개)")
 
-                df_reviews['category_1'] = df_reviews['product_code'].map(product_category_map)
-
-                for category1, small_categories in category_info.items():
-                    category_reviews = df_reviews[df_reviews['category_1'] == category1]
-                    if len(category_reviews) > 0:
-                        sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                        # 파일명에 사용할 수 없는 특수문자 제거
-                        sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
-                        review_file = f'data/reviews_{category1}_{sub_category_safe}_{date_str}.csv'
-                        category_reviews.drop('category_1', axis=1).to_csv(review_file, index=False, encoding='utf-8-sig')
-                        logger.info(f"리뷰 저장 완료: {review_file} ({len(category_reviews)}개)")
-                        print(f"리뷰: {review_file} ({len(category_reviews)}개)")
-            else:
-                # minimal_mode거나 제품 정보가 없으면 all로 저장
-                review_file = f'data/reviews_all_{date_str}.csv'
-                df_reviews.to_csv(review_file, index=False, encoding='utf-8-sig')
-                logger.info(f"리뷰 저장 완료: {review_file} ({len(df_reviews)}개)")
-                print(f"리뷰: {review_file} ({len(df_reviews)}개)")
-
+        # 성분 저장 (하나의 파일)
         if all_ingredients:
-            # 성분도 대분류별로 분리 (product_code로 매핑)
             df_ingredients = pd.DataFrame(all_ingredients)
-
-            # minimal_mode에서는 제품 정보를 수집하지 않으므로,
-            # 크롤링한 제품의 category_1을 따로 추적해야 함
-            # 간단하게 처리: all_products가 있으면 매핑, 없으면 카테고리 정보에서 추론
-            if not minimal_mode and all_products:
-                df_products = pd.DataFrame(all_products)
-                product_category_map = dict(zip(df_products['product_code'], df_products['category_1']))
-            else:
-                # minimal_mode: 크롤링한 순서대로 카테고리 매핑
-                # (이 경우 product_code와 category를 직접 매핑하기 어려우므로 카테고리 정보 활용)
-                product_category_map = {}
-
-            df_ingredients['category_1'] = df_ingredients['product_code'].map(product_category_map)
-
-            for category1, small_categories in category_info.items():
-                category_ingredients = df_ingredients[df_ingredients['category_1'] == category1]
-                if len(category_ingredients) > 0:
-                    sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                    # 파일명에 사용할 수 없는 특수문자 제거
-                    sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
-                    ingredient_file = f'data/ingredients_{category1}_{sub_category_safe}_{date_str}.csv'
-                    category_ingredients.drop('category_1', axis=1).to_csv(ingredient_file, index=False, encoding='utf-8-sig')
-                    logger.info(f"성분 저장 완료: {ingredient_file} ({len(category_ingredients)}개)")
-                    print(f"성분: {ingredient_file} ({len(category_ingredients)}개)")
-
-            # 카테고리 매핑이 안 된 성분이 있으면 별도 저장
-            unmapped = df_ingredients[df_ingredients['category_1'].isna()]
-            if len(unmapped) > 0:
-                # minimal_mode이고 카테고리가 1개면 그 카테고리로 저장
-                if len(category_info) == 1:
-                    category1 = list(category_info.keys())[0]
-                    small_categories = category_info[category1]
-                    sub_category = list(small_categories)[0] if len(small_categories) == 1 else 'all'
-                    # 파일명에 사용할 수 없는 특수문자 제거
-                    sub_category_safe = sub_category.replace('/', '_').replace(':', '_').replace('\\', '_')
-                    ingredient_file = f'data/ingredients_{category1}_{sub_category_safe}_{date_str}.csv'
-                else:
-                    ingredient_file = f'data/ingredients_unmapped_{date_str}.csv'
-                unmapped.drop('category_1', axis=1, errors='ignore').to_csv(ingredient_file, index=False, encoding='utf-8-sig')
-                logger.info(f"매핑 안 된 성분 저장 완료: {ingredient_file} ({len(unmapped)}개)")
-                print(f"성분: {ingredient_file} ({len(unmapped)}개)")
+            ingredient_file = f'data/ingredients_{date_str}.csv'
+            df_ingredients.to_csv(ingredient_file, index=False, encoding='utf-8-sig')
+            logger.info(f"성분 저장 완료: {ingredient_file} ({len(df_ingredients)}개)")
+            print(f"성분: {ingredient_file} ({len(df_ingredients)}개)")
 
         print(f"\n{'='*60}")
         print("크롤링 완료")
