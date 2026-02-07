@@ -198,7 +198,8 @@ INGREDIENT_KEYWORDS = [
     "전성분", "화장품법", "모든 성분",
     "화장품법에 따라", "기재 표시", "기재·표시", "기재표시", "표시하여야", "표시 하여야",
     "하여야하는", "하여야 하는",
-    "성분:",
+    "성분:", "[성분명]", "성분명", "[전성분]",
+    "성분은", "주성분",  # 추가: "성분은 정제수..." 형식 대응
     "INGREDIENTS", "Ingredients",
 ]
 
@@ -477,6 +478,50 @@ KNOWN_INGREDIENTS = {
     # 향료 성분 (자주 등장)
     '향료', 'Fragrance', 'Parfum', '라임향', '레몬향', '민트향',
     '시트러스향', '플로럴향', '우디향', '머스크향',
+
+    # === Phase 1-1 추가: 누락 성분 확장 ===
+
+    # 에톡실레이트 계열 (하이픈+숫자)
+    '글리세레스-26', '글리세레스-7', '글리세레스-10',
+    '폴리글리세릴-10미리스테이트', '폴리글리세릴-10라우레이트',
+    '폴리글리세릴-10올레에이트', '폴리글리세릴-10스테아레이트',
+    '폴리글리세릴-3다이아이소스테아레이트', '폴리글리세릴-6다이스테아레이트',
+    '폴리글리세릴-2다이폴리하이드록시스테아레이트',
+
+    # 곡물/식물 유래
+    '옥수수전분', '쌀겨오일', '쌀전분', '감자전분', '타피오카전분',
+    '밀전분', '고구마전분', '쌀겨추출물', '현미추출물',
+    '쌀뜨물', '보리추출물', '귀리추출물', '메밀추출물',
+
+    # 효소
+    '파파인', '브로멜라인', '서브틸리신', '리파아제',
+    '프로테아제', '아밀라아제', '셀룰라아제', '락타아제',
+    '수퍼옥사이드디스뮤타아제', '카탈라아제',
+
+    # 항산화/아미노산 유도체
+    '글루타치온', '라이신에이치씨엘', '알지닌에이치씨엘',
+    '히스티딘에이치씨엘', '시스테인에이치씨엘', '글루타민에이치씨엘',
+    '라이신하이드로클로라이드', '알지닌하이드로클로라이드',
+    '라이신염산염', '알지닌염산염', '시스테인염산염',
+
+    # 솔비탄/솔비톨 계열
+    '솔비탄모노스테아레이트', '솔비탄트라이스테아레이트',
+    '솔비탄모노올레에이트', '솔비탄세스퀴올레에이트',
+    '솔비탄모노라우레이트', '솔비탄모노팔미테이트',
+    '솔비톨', 'Sorbitol',
+
+    # 기타 누락 성분
+    '카프릴릴글라이콜', '잔탄검', '합성왁스', '마이크로크리스탈린왁스',
+    '세테아릴글루코사이드', '데실글루코사이드', '라우릴글루코사이드',
+    '코코글루코사이드', '코코베타인', '라우라마이도프로필베타인',
+    '코카마이도프로필베타인', '세틸피지', 'CetylPG',
+    '하이드록시에틸셀룰로오스', '하이드록시프로필메틸셀룰로오스',
+    '카복시메틸셀룰로오스', '에틸셀룰로오스', '메틸셀룰로오스',
+
+    # 비타민 유도체
+    '토코페릴아세테이트', '아스코르빌테트라이소팔미테이트',
+    '레티닐아세테이트', '피리독신에이치씨엘', '리보플라빈포스페이트',
+    '티아민에이치씨엘', '시아노코발라민', '엽산', '판토텐산',
 }
 
 
@@ -506,7 +551,12 @@ def normalize_ingredient_name(name: str) -> str:
     # 예: "10|하이드록사이드" → "하이드록사이드", "=10|드로사이드" → "드로사이드"
     name = re.sub(r'^[0-9=|!@#$%^&*<>]+', '', name)
 
-    # 4. 괄호 내용 제거
+    # 4. 괄호 내용 제거 (Phase 1-2: 농도/함량 괄호 우선 처리)
+    # 농도/함량 괄호 먼저 제거 (숫자+단위): 솔비톨(44.79%), 니코틴산아마이드(10ppm) 등
+    # 지원 단위: %, ppb, ppm, mg/kg, µg/kg, mg/L, µg/L, g/L, w/w, w/v, v/v, mg, g, ml, L, kg
+    concentration_pattern = r'\(\s*[\d,\.]+\s*(ppb|ppm|%|mg/kg|µg/kg|mg/L|µg/L|g/L|w/w|w/v|v/v|mg|g|ml|L|kg)?\s*\)'
+    name = re.sub(concentration_pattern, '', name, flags=re.IGNORECASE)
+    # 나머지 괄호 제거
     name = re.sub(r'\([^)]*\)', '', name)
     name = re.sub(r'\[[^\]]*\]', '', name)
 
@@ -559,6 +609,15 @@ KOREAN_CHEMICAL_SUFFIXES = frozenset([
     '꽃수', '꽃물', '플로럴워터',  # 플로럴 워터 패턴
     '하이알루로네이트', '하이알루로닉',  # 히알루론산 패턴
     '크로스폴리머', '코폴리머',  # 폴리머 패턴
+
+    # === Phase 2 추가: 확장 접미사 ===
+    '전분',  # 곡물 유래 (옥수수전분, 쌀전분 등)
+    '에이치씨엘', '하이드로클로라이드', '염산염',  # 아미노산+염 (라이신에이치씨엘 등)
+    '황산염', '질산염', '탄산염',  # 기타 염류
+    '아제', '라아제',  # 효소 (파파인, 리파아제 등)
+    '글루코사이드',  # 당 유도체 (세테아릴글루코사이드 등)
+    '셀룰로오스', '셀룰로스',  # 셀룰로오스 유도체
+    '미리스테이트', '라우레이트', '팔미테이트', '스테아레이트',  # 지방산 에스터
 ])
 
 # 동사형 어미 예외 (화학 성분명에서 허용되는 어미)
@@ -648,6 +707,42 @@ def _check_chemical_patterns(text: str) -> tuple:
     if re.match(r'^(라우레스|세테스|올레스|스테아레스|세테아레스|폴리소르베이트|솔비탄)[-\s]?\d+', text):
         return True, 0.9, "ethoxylate"
 
+    # === Phase 2 추가: 확장 패턴 ===
+
+    # 에톡실레이트 확장 (하이픈+숫자 복합형): 글리세레스-26, 폴리글리세릴-10미리스테이트 등
+    if re.match(r'^(글리세레스|폴리글리세릴|세테스|올레스|스테아레스|트라이데세스)[-]?\d+.*$', text):
+        return True, 0.9, "ethoxylate_extended"
+
+    # 효소 패턴: ~아제, ~라아제 (단, 동사 어미 제외)
+    # 파파인, 브로멜라인, 리파아제, 프로테아제 등
+    if re.match(r'^.{2,}(아제|라아제|인)$', text):
+        # '~하는', '~되는' 등 동사형이 아닌지 확인
+        if not re.search(r'(하는|되는|있는|없는)$', text):
+            # '인'으로 끝나는 경우 더 엄격하게 검증 (효소명 패턴)
+            if text.endswith('인') and len(text) >= 3:
+                # 파파인, 브로멜라인, 트립신, 펩신 등 효소/단백질명
+                if re.match(r'^[가-힣]{2,}인$', text):
+                    return True, 0.85, "enzyme"
+            elif text.endswith('아제') or text.endswith('라아제'):
+                return True, 0.85, "enzyme"
+
+    # 아미노산+염 패턴: ~에이치씨엘, ~하이드로클로라이드, ~염산염
+    if re.match(r'.+(에이치씨엘|하이드로클로라이드|염산염|황산염|질산염)$', text):
+        return True, 0.85, "amino_acid_salt"
+
+    # 식물 유래 패턴: ~오일, ~전분, ~버터 (4자 이상)
+    if len(text) >= 4:
+        if re.match(r'^[가-힣]{2,}(오일|전분|버터)$', text):
+            return True, 0.85, "plant_derived"
+
+    # 글루코사이드 패턴: ~글루코사이드
+    if text.endswith('글루코사이드') and len(text) >= 6:
+        return True, 0.85, "glucoside"
+
+    # 셀룰로오스 유도체: ~셀룰로오스, ~셀룰로스
+    if re.match(r'^.+(셀룰로오스|셀룰로스)$', text) and len(text) >= 6:
+        return True, 0.85, "cellulose_derivative"
+
     # 영문 화학명 패턴 (예: Glycerin, Tocopherol)
     if re.match(r'^[A-Z][a-z]{3,}(yl|ol|in|ate|ide|ene|one|ose)?$', text):
         return True, 0.8, "english_chemical"
@@ -698,38 +793,48 @@ def is_valid_ingredient(text: str, known_db: set = KNOWN_INGREDIENTS) -> tuple:
     if text in known_db:
         return True, 1.0, "known_ingredient"
 
-    # 3. 노이즈/불용어 체크
-    is_invalid, reason = _is_noise_or_stopword(text)
-    if is_invalid:
-        return False, 0.0, reason
-
-    # 4. 화학 성분 패턴 매칭
+    # 3. 화학 성분 패턴 매칭 (노이즈 체크보다 먼저 수행)
+    # 화학 패턴에 매칭되면 불용어 체크를 건너뜀 (폴리글리세릴-6올레에이트 등)
     pattern_result = _check_chemical_patterns(text)
     if pattern_result:
         return pattern_result
 
-    # 5. 한글 화학 성분명 체크
+    # 4. 한글 화학 성분명 체크 (접두사/접미사 기반)
     if _is_korean_chemical(text):
         return True, 0.85, "korean_chemical"
+
+    # 5. 노이즈/불용어 체크 (화학 패턴에 매칭되지 않은 경우에만)
+    is_invalid, reason = _is_noise_or_stopword(text)
+    if is_invalid:
+        return False, 0.0, reason
 
     # 6. 기본 거부 (모든 조건 불충족)
     # False일 때 confidence는 무조건 0.0으로 통일
     return False, 0.0, "no_pattern_match"
 
 
-def extract_from_text(text: str, source: str) -> list:
+def extract_from_text(text: str, source: str, threshold: float = None) -> list:
     """
     텍스트에서 성분 추출
 
     Args:
         text: OCR 또는 ALT 텍스트
         source: 출처 (HTML, ALT_0, OCR_0_1 등)
+        threshold: confidence threshold (None이면 source 기반 자동 결정)
 
     Returns:
         list: [{'ingredient': str, 'source': str}, ...]
     """
     import re
     ingredients = []
+
+    # Phase 3: 소스별 threshold 적용
+    if threshold is None:
+        # ALT 텍스트나 CLOVA OCR은 신뢰도가 높으므로 낮은 threshold 적용
+        if source.startswith('ALT') or 'CLOVA' in source.upper():
+            threshold = 0.75
+        else:
+            threshold = 0.85
 
     # 실제 성분명 패턴 (성분 시작 검증용)
     REAL_INGREDIENT_PATTERNS = [
@@ -738,9 +843,32 @@ def extract_from_text(text: str, source: str) -> list:
         '판테놀', '아데노신', '세라마이드', '콜라겐', '레티놀', '비타민',
     ]
 
+    # 전처리: "전성분" 키워드가 텍스트 중간에 있는 경우 처리
+    # 예: "에틸헥실팔미테이트,\n글리세린,\n...\n전성분\n폴리글리세릴..."
+    # 이 경우 키워드 앞의 성분들도 추출해야 함
+    text_flat = text.replace('\n', ' ').replace('  ', ' ')
+    mid_keyword_patterns = ['전성분', '성분은', '[성분명]', '성분명]']
+
+    for kw in mid_keyword_patterns:
+        kw_pos = text_flat.find(kw)
+        if kw_pos > 10:  # 키워드가 텍스트 시작이 아닌 중간에 있음
+            before_keyword = text_flat[:kw_pos]
+            # 키워드 앞에 실제 성분명이 있는지 확인
+            if any(ing in before_keyword for ing in REAL_INGREDIENT_PATTERNS):
+                # 키워드를 쉼표로 대체하여 전체를 성분으로 처리
+                text = text_flat.replace(kw, ',')
+                break
+
     lines = text.split('\n')
     in_ingredients = False
     ingredient_text = []
+
+    # 첫 줄에 실제 성분명이 있으면 바로 성분 섹션으로 판단 (Clova OCR 결과 대응)
+    first_line = lines[0].strip() if lines else ''
+    if any(ing in first_line for ing in REAL_INGREDIENT_PATTERNS):
+        in_ingredients = True
+        ingredient_text.append(first_line)
+        lines = lines[1:]  # 첫 줄은 이미 추가했으므로 제외
 
     for idx, line in enumerate(lines):
         line = line.strip()
@@ -752,36 +880,57 @@ def extract_from_text(text: str, source: str) -> list:
 
         # 성분 섹션 시작 (키워드 확인)
         if any(kw in line for kw in INGREDIENT_KEYWORDS):
+            # 정확한 키워드가 있으면 바로 성분 섹션으로 인식
+            exact_keyword = '전성분' in line or '성분은' in line or '성분:' in line or '[성분명]' in line or '성분명]' in line
+
             # 같은 줄 또는 다음 줄에 실제 성분명이 있는지 확인
             has_real_ingredient = any(ing in line for ing in REAL_INGREDIENT_PATTERNS)
 
-            # 다음 3줄까지 확인 (성분이 키워드 다음 줄에 있을 수 있음)
+            # 다음 5줄까지 확인 (성분이 키워드 다음 줄에 있을 수 있음)
             if not has_real_ingredient:
-                for look_ahead in range(1, 4):
+                for look_ahead in range(1, 6):
                     if idx + look_ahead < len(lines):
                         next_line = lines[idx + look_ahead].strip()
                         if any(ing in next_line for ing in REAL_INGREDIENT_PATTERNS):
                             has_real_ingredient = True
                             break
 
-            if has_real_ingredient:
+            # '전성분' 정확 매칭이거나 실제 성분명이 발견된 경우
+            if exact_keyword or has_real_ingredient:
                 in_ingredients = True
 
-                # "법에 따라", "하여야하는" 등 패턴 뒤의 텍스트만 추출
-                pattern = r'(?:법에\s*따라|하여야\s*하는|모든\s*성분|전성분|INGREDIENTS?)\s*(.+)'
-                match = re.search(pattern, line, re.IGNORECASE)
+                # 키워드가 중간에 있는지 확인 (키워드 앞에도 성분명이 있는 경우)
+                # 예: "솔비톨,옥수수전분,...전성분...세라마이드엔피"
+                keyword_in_middle = False
+                for kw in ['전성분', '성분은', '성분:', '[성분명]', '성분명]']:
+                    kw_pos = line.find(kw)
+                    if kw_pos > 0:  # 키워드가 라인 시작이 아닌 중간에 있음
+                        before_keyword = line[:kw_pos]
+                        # 키워드 앞에 실제 성분명이 있는지 확인
+                        if any(ing in before_keyword for ing in REAL_INGREDIENT_PATTERNS):
+                            keyword_in_middle = True
+                            # 키워드를 쉼표로 대체하여 전체 라인을 성분으로 처리
+                            cleaned_line = line.replace(kw, ',').strip()
+                            ingredient_text.append(cleaned_line)
+                            logger.debug(f"키워드 중간 삽입 감지: '{kw}' → 전체 라인 처리")
+                            break
 
-                if match:
-                    remaining = match.group(1).strip()
-                    if remaining:
-                        ingredient_text.append(remaining)
-                else:
-                    # 키워드 제거 후 추가
-                    for kw in INGREDIENT_KEYWORDS:
-                        line = line.replace(kw, '')
-                    line = line.strip()
-                    if line:
-                        ingredient_text.append(line)
+                if not keyword_in_middle:
+                    # 기존 로직: 키워드 뒤의 텍스트만 추출
+                    pattern = r'(?:법에\s*따라|하여야\s*하는|모든\s*성분|전성분|성분은|성분:|\[성분명\]|성분명\]|INGREDIENTS?)\s*(.+)'
+                    match = re.search(pattern, line, re.IGNORECASE)
+
+                    if match:
+                        remaining = match.group(1).strip()
+                        if remaining:
+                            ingredient_text.append(remaining)
+                    else:
+                        # 키워드 제거 후 추가
+                        for kw in INGREDIENT_KEYWORDS:
+                            line = line.replace(kw, '')
+                        line = line.strip()
+                        if line:
+                            ingredient_text.append(line)
             continue
 
         # 성분 섹션 종료
@@ -815,7 +964,8 @@ def extract_from_text(text: str, source: str) -> list:
                     normalized_sub = normalize_ingredient_name(sub)
                     if normalized_sub and len(normalized_sub) >= 2 and normalized_sub not in seen:
                         is_valid, confidence, reason = is_valid_ingredient(normalized_sub)
-                        if is_valid and confidence >= 0.85:
+                        # Phase 3: 소스별 threshold 적용
+                        if is_valid and confidence >= threshold:
                             ingredients.append({'ingredient': normalized_sub, 'source': source})
                             seen.add(normalized_sub)
         else:
@@ -824,7 +974,8 @@ def extract_from_text(text: str, source: str) -> list:
                 normalized = normalize_ingredient_name(part)
                 if normalized and len(normalized) >= 2:
                     is_valid, confidence, reason = is_valid_ingredient(normalized)
-                    if is_valid and normalized not in seen:
+                    # Phase 3: 소스별 threshold 적용
+                    if is_valid and confidence >= threshold and normalized not in seen:
                         ingredients.append({'ingredient': normalized, 'source': source})
                         seen.add(normalized)
 
