@@ -157,15 +157,29 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
                         clova_text = clova_client.extract_text_from_url(url)
 
                     # 성분 키워드 + 실제 성분명이 함께 있어야 함
-                    HEADER_KEYWORDS = ['전성분', '성분:', '모든성분', '화장품법']
-                    ACTUAL_INGREDIENTS = ['정제수', '글리세린', '부틸렌글라이콜', '나이아신아마이드', '토코페롤', '히알루론산']
+                    HEADER_KEYWORDS = ['전성분', '성분:', '모든성분', '화장품법', 'INGREDIENTS', 'Ingredients']
+                    # 다양한 화장품 유형에서 자주 등장하는 성분들 (스킨케어, 클렌징, 헤어, 바디 등)
+                    ACTUAL_INGREDIENTS = [
+                        # 기본 성분
+                        '정제수', '글리세린', '부틸렌글라이콜', '프로판다이올',
+                        # 스킨케어 성분
+                        '나이아신아마이드', '토코페롤', '히알루론산', '판테놀', '알란토인',
+                        # 계면활성제/클렌징
+                        '라우릴', '설페이트', '코카미도', '베타인', '올레핀',
+                        # 유화제/안정제
+                        '폴리소르베이트', '스테아릭', '트리에탄올아민', '카보머',
+                        # 보존제/향료
+                        '벤질알코올', '페녹시에탄올', '멘톨', '향료', '리모넨',
+                        # 오일/왁스
+                        '미네랄오일', '시어버터', '호호바', '스쿠알란',
+                    ]
 
-                    # 헤더 키워드 또는 영문 Ingredients가 있으면서 실제 성분명도 있어야 함
+                    # 헤더 키워드가 있으면서 실제 성분명도 있어야 함
                     has_header = any(kw in clova_text for kw in HEADER_KEYWORDS) if clova_text else False
-                    has_actual_ingredients = sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text) >= 2 if clova_text else False
+                    ingredient_count = sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text) if clova_text else 0
 
-                    # Clova 결과 검증: (헤더 + 2개 이상 성분) 또는 (3개 이상 성분)
-                    has_ingredient_keywords = (has_header and has_actual_ingredients) or sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text) >= 3 if clova_text else False
+                    # Clova 결과 검증: (헤더 + 1개 이상 성분) 또는 (2개 이상 성분)
+                    has_ingredient_keywords = (has_header and ingredient_count >= 1) or ingredient_count >= 2 if clova_text else False
 
                     if clova_text and len(clova_text) > 50 and has_ingredient_keywords:
                         logger.info(f"Clova OCR 성공: {len(clova_text)}자 추출 (성분 키워드 확인됨)")
