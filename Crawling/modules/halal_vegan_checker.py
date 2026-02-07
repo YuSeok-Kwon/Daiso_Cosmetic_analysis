@@ -64,9 +64,20 @@ HARAM_INGREDIENTS = {
 }
 
 # 애매한 성분 (식물성/동물성 혼재 - 원료 확인 필요)
+# 이 성분들은 원료 출처에 따라 비건/할랄 여부가 달라질 수 있음
 AMBIGUOUS_INGREDIENTS = {
-    # 지방 유래 (식물성/동물성 혼재)
+    # === 원료 출처 확인 필요 (식물성/동물성 혼재) ===
     '글리세린', 'Glycerin', 'Glycerol',
+    '부틸렌글라이콜', 'ButyleneGlycol', '1,3-부틸렌글라이콜',
+    '세테아릴알코올', 'CetearylAlcohol',
+    '에틸헥실글리세린', 'EthylhexylGlycerin',
+    '토코페롤', 'Tocopherol', '비타민E',
+    '펜틸렌글라이콜', 'PentyleneGlycol', '1,2-펜탄디올',
+    '프로판다이올', 'Propanediol', '1,3-프로판다이올',
+    '하이드로제네이티드레시틴', 'HydrogenatedLecithin', '수소첨가레시틴',
+    '향료', 'Fragrance', 'Parfum',
+
+    # 지방 유래 (식물성/동물성 혼재)
     '스테아르산', 'StearicAcid', '스테아릭애시드', '스테아릭산',
     '팔미트산', '팔미틱산', '팔미틱애시드', 'PalmiticAcid',
     '올레산', '올레익애시드', 'OleicAcid',
@@ -84,7 +95,6 @@ AMBIGUOUS_INGREDIENTS = {
 
     # 레시틴 계열
     '레시틴', 'Lecithin',
-    '수소첨가레시틴', 'HydrogenatedLecithin',
 
     # 세라마이드 계열
     '세라마이드', 'Ceramide',
@@ -103,7 +113,6 @@ AMBIGUOUS_INGREDIENTS = {
     '콜레스테롤', 'Cholesterol',
 
     # 비타민
-    '토코페롤', 'Tocopherol',
     '레티놀', 'Retinol',
     '판테놀', 'Panthenol',
 
@@ -139,14 +148,10 @@ VEGAN_SAFE_INGREDIENTS = {
     '포도씨오일', 'GrapeSeedOil', '동백오일', 'CamelliaOil',
     '로즈힙오일', 'RosehipOil', '마카다미아오일', 'MacadamiaOil',
 
-    # 합성 성분 (비동물성)
+    # 합성 성분 (비동물성 확정)
     '정제수', 'Water', 'Aqua',
-    '글리세린', 'Glycerin',
-    '부틸렌글라이콜', 'ButyleneGlycol',
     '디프로필렌글라이콜', 'DipropyleneGlycol',
-    '프로판다이올', 'Propanediol',
     '1,2-헥산다이올', '2-헥산다이올',
-    '펜틸렌글라이콜',
     '페녹시에탄올', 'Phenoxyethanol',
     '소듐폴리아크릴레이트', 'SodiumPolyacrylate',
     '잔탄검', 'XanthanGum',
@@ -154,11 +159,7 @@ VEGAN_SAFE_INGREDIENTS = {
     '티타늄디옥사이드', 'TitaniumDioxide',
     '징크옥사이드', 'ZincOxide',
     '나이아신아마이드', 'Niacinamide',
-    '토코페롤', 'Tocopherol',
-    '소듐하이알루로네이트', 'SodiumHyaluronate',
-    '하이알루로닉애시드', 'HyaluronicAcid',
     '벤질글라이콜', 'BenzylGlycol',
-    '에틸헥실글리세린', 'EthylhexylGlycerin',
     '아데노신', 'Adenosine',
     '트로메타민', 'Tromethamine',
 
@@ -176,7 +177,6 @@ VEGAN_SAFE_INGREDIENTS = {
     '글리세릴스테아레이트',
     '글리세릴카프릴레이트',
     '세틸에틸헥사노에이트',
-    '세테아릴알코올',
     '솔비탄아이소스테아레이트',
     '폴리글리세릴-30메틸글루코오스다이스테아레이트',
 
@@ -190,9 +190,6 @@ VEGAN_SAFE_INGREDIENTS = {
     '알루미나', '알루미늄하이드록사이드',
     '실리카', 'Silica',
     '보론나이트라이드',
-
-    # 향료
-    '향료', 'Fragrance', 'Parfum',
 
     # 기타 합성 성분
     '소듐클로라이드', 'SodiumChloride',
@@ -246,11 +243,11 @@ def check_halal_vegan_status(ingredient: str) -> dict:
         result['is_halal'] = 'Yes'
         return result
 
-    # 4단계: 애매한 성분 (현대 화장품은 대부분 식물성/발효)
+    # 4단계: 애매한 성분 (원료 출처에 따라 달라짐)
     if ingredient in AMBIGUOUS_INGREDIENTS:
-        result['is_vegan'] = 'Yes'
-        result['is_halal'] = 'Yes'
-        result['warning'] = '식물성/발효 원료 (현대 화장품 기준)'
+        result['is_vegan'] = 'Unknown'
+        result['is_halal'] = 'Unknown'
+        result['warning'] = '원료 출처 확인 필요 (식물성/동물성 혼재 가능)'
         return result
 
     # 5단계: 알 수 없는 성분 - 기본적으로 합성/식물성으로 간주

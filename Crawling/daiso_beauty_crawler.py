@@ -21,7 +21,8 @@ from modules.halal_vegan_checker import check_halal_vegan_status
 from modules.ingredient_parser import (
     normalize_ingredient_name,
     is_valid_ingredient,
-    extract_from_text
+    extract_from_text,
+    INGREDIENT_KEYWORDS
 )
 from utils import setup_logger, get_date_string
 
@@ -82,10 +83,16 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
 
                     sections = extract_text_from_image_url_split(src, num_sections=5)  # 5개 섹션으로 세분화
 
-                    for section_idx, section in enumerate(sections or []):
-                        text = section.get('text', '')
+                    # 전체 텍스트에서 성분 키워드 존재 여부 확인
+                    all_section_text = ' '.join([s.get('text', '') for s in sections or []])
+                    has_ingredient_section = any(kw in all_section_text for kw in INGREDIENT_KEYWORDS)
 
-                        if any(kw in text for kw in INGREDIENT_KEYWORDS):
+                    if has_ingredient_section:
+                        # 키워드가 있는 이미지면 모든 섹션에서 성분 추출 시도
+                        for section_idx, section in enumerate(sections or []):
+                            text = section.get('text', '')
+
+                            # 각 섹션의 텍스트에서 성분 추출
                             ocr_ingredients = extract_from_text(text, source=f"OCR_{idx}_{section_idx}")
 
                             for ing in ocr_ingredients:
@@ -137,14 +144,15 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
 
     logger.info(f"최종 성분: {len(final_ingredients)}개")
 
-    # 할랄/비건 통계
+    # 할랄/비건 통계 (Unknown도 의심으로 카운트)
     vegan_count = len([x for x in final_ingredients if x['can_vegan'] == 'Yes'])
+    vegan_unknown = len([x for x in final_ingredients if x['can_vegan'] == 'Unknown'])
     non_vegan_count = len([x for x in final_ingredients if x['can_vegan'] == 'No'])
-    halal_questionable = len([x for x in final_ingredients if x['can_halal'] == 'Questionable'])
+    halal_questionable = len([x for x in final_ingredients if x['can_halal'] in ('Questionable', 'Unknown')])
     haram_count = len([x for x in final_ingredients if x['can_halal'] == 'No'])
 
     logger.info(f"할랄/비건 분석:")
-    logger.info(f"  - 비건 적합: {vegan_count}개 | 부적합: {non_vegan_count}개")
+    logger.info(f"  - 비건 적합: {vegan_count}개 | 확인필요: {vegan_unknown}개 | 부적합: {non_vegan_count}개")
     logger.info(f"  - 할랄 의심: {halal_questionable}개 | 부적합: {haram_count}개")
 
     return final_ingredients
@@ -222,41 +230,8 @@ def extract_brand(driver, category_2=""):
     return ""
 
 
-def crawl_product_detail(driver, url, category_home, category_1, category_2, crawl_reviews=True, crawl_ingredients=True):
-    """제품 상세 정보 크롤링"""
-    # URL에서 pdNo를 먼저 추출 (primary key로 사용)
-    url_pdno_match = re.search(r"pdNo=([A-Z0-9]+)", url)
-    if not url_pdno_match:
-        logger.error(f"URL에서 pdNo 추출 실패 - URL: {url}")
-        return None, [], []
-
-    url_pdno = url_pdno_match.group(1)
-    logger.info(f"제품 크롤링 시작 - pdNo: {url_pdno}")
-
-    product = {
-        "product_code": url_pdno,  # URL pdNo를 기본값으로 사용
-        "category_home": category_home,
-        "category_1": category_1,
-        "category_2": category_2,
-        "brand": "",
-        "name": "",
-        "price": "",
-        "country": "",
-        "likes": 0,
-        "shares": 0,
-        "url": url,
-        "can_할랄인증": "Unknown",  # 할랄 인증 가능 여부
-        "can_비건": "Unknown",  # 비건 인증 가능 여부
-        "certifications": "",  # 제품 설명에 명시된 인증 정보
-    }
-
-    reviews = []
-    ingredients = []
-
-    # 페이지 로드
-    driver.get(url)
-    logger.debug("페이지 로딩 대기 시작")
-
+def _wait_for_page_load(driver, url_pdno: str) -> bool:
+    """페이지 로딩 대기"""
     # 1단계: 기본 DOM 로딩 대기
     try:
         WebDriverWait(driver, 15).until(
@@ -266,7 +241,7 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
     except Exception as e:
         logger.warning(f"product-info-wrap 로딩 타임아웃: {str(e)}")
 
-    # 2단계: JavaScript 실행 완료 대기 (더 긴 시간)
+    # 2단계: JavaScript 실행 완료 대기
     time.sleep(5)
 
     # 3단계: 스크롤로 Lazy Loading 트리거
@@ -279,170 +254,92 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
     max_retries = 5
     for retry in range(max_retries):
         try:
-            # info-area 내부의 product-title이 텍스트를 가질 때까지 대기
             name_element = WebDriverWait(driver, 3).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".info-area .product-title"))
             )
             name_text = name_element.text.strip()
             if name_text and len(name_text) > 0:
                 logger.debug(f"제품명 로딩 완료 (시도 {retry + 1}/{max_retries})")
-                break
+                return True
             else:
                 logger.debug(f"제품명 로딩 대기 중 (시도 {retry + 1}/{max_retries})")
                 time.sleep(2)
         except Exception as e:
             logger.debug(f"제품명 대기 중 예외 (시도 {retry + 1}/{max_retries}): {str(e)}")
             time.sleep(2)
-    else:
-        logger.warning(f"제품명 로딩 타임아웃 - pdNo: {url_pdno}")
 
-    # 실제 로드된 URL 확인 (리다이렉트 체크)
+    logger.warning(f"제품명 로딩 타임아웃 - pdNo: {url_pdno}")
+    return False
+
+
+def _extract_basic_info(driver, product: dict, url_pdno: str, category_2: str) -> str:
+    """
+    기본 제품 정보 추출 (브랜드, 제품명, 가격, 제조국 등)
+
+    Returns:
+        url_pdno: 업데이트된 제품 코드
+    """
+    # 리다이렉트 체크
     current_url = driver.current_url
     current_pdno_match = re.search(r"pdNo=([A-Z0-9]+)", current_url)
 
     if current_pdno_match:
         current_pdno = current_pdno_match.group(1)
         if current_pdno != url_pdno:
-            logger.warning(f"URL 리다이렉트 감지!")
-            logger.warning(f"   요청 pdNo: {url_pdno} → 실제 pdNo: {current_pdno}")
-            logger.warning(f"   이 제품은 중복 방지 로직에 의해 스킵될 수 있습니다")
-            # 실제 로드된 pdNo로 업데이트
+            logger.warning(f"URL 리다이렉트 감지! 요청: {url_pdno} → 실제: {current_pdno}")
             product["product_code"] = current_pdno
             url_pdno = current_pdno
-        else:
-            logger.debug(f"URL 일치: {url_pdno}")
     else:
         logger.warning(f"현재 URL에서 pdNo 추출 불가: {current_url}")
 
-    try:
-        # 카테고리 breadcrumb
-        crumbs = driver.find_elements(By.CSS_SELECTOR, ".el-breadcrumb__inner.is-link")
-        texts = [c.text.strip() for c in crumbs if c.text.strip()]
-    except:
-        pass
-
     # 브랜드
     product["brand"] = extract_brand(driver, category_2)
-    logger.debug(f"브랜드: {product['brand']}")
 
-    # 제품명 추출 - h1.product-title 선택자 사용 (추천 제품 제외)
-    # 핵심: h1 태그만 선택 (추천 제품은 div.product-title이므로 제외됨)
-    name_selectors = [
-        "h1.product-title",  # 메인 제품명 (h1 태그)
-        ".info-area h1",  # 폴백 1
-        ".product-info-wrap h1",  # 폴백 2
-    ]
-
+    # 제품명 추출
+    name_selectors = ["h1.product-title", ".info-area h1", ".product-info-wrap h1"]
     for selector in name_selectors:
         try:
             element = driver.find_element(By.CSS_SELECTOR, selector)
             product["name"] = element.text.strip()
             if product["name"]:
-                logger.info(f"제품명 추출 성공 ({selector}): {product['name'][:50]}")
+                logger.info(f"제품명 추출 성공: {product['name'][:50]}")
                 break
-        except Exception as e:
-            logger.debug(f"제품명 추출 실패 ({selector}): {str(e)}")
+        except:
             continue
 
-    # 3) 옵션 정보 추가 (있는 경우)
+    # 옵션 정보 추가
     if product["name"]:
         try:
             option_element = driver.find_element(By.CSS_SELECTOR, ".product-option-text, .option-text, .selected-option")
             option_text = option_element.text.strip()
             if option_text and option_text not in product["name"]:
                 product["name"] = f"{product['name']} ({option_text})"
-                logger.info(f"옵션 정보 추가: {option_text}")
         except:
-            logger.debug("옵션 정보 없음")
+            pass
 
-    # 4) 최종 검증
-    if not product["name"]:
-        logger.error(f"제품명 추출 완전 실패 - pdNo: {url_pdno}")
-
-        # 디버깅: HTML 구조 저장 (첫 번째 실패만)
-        if not hasattr(crawl_product_detail, '_name_fail_saved'):
-            try:
-                os.makedirs('logs/name_fail', exist_ok=True)
-
-                # HTML 저장
-                html_file = f"logs/name_fail/fail_{url_pdno}.html"
-                with open(html_file, 'w', encoding='utf-8') as f:
-                    f.write(driver.page_source)
-
-                # 스크린샷 저장
-                screenshot_file = f"logs/name_fail/fail_{url_pdno}.png"
-                driver.save_screenshot(screenshot_file)
-
-                # product-title 요소들 모두 출력
-                all_titles = driver.find_elements(By.CLASS_NAME, "product-title")
-                logger.info(f"페이지 내 product-title 요소 수: {len(all_titles)}")
-                for idx, title in enumerate(all_titles):
-                    logger.info(f"  [{idx}] {title.text[:50]}...")
-
-                logger.info(f"디버깅 파일 저장: {html_file}")
-                logger.info(f"스크린샷 저장: {screenshot_file}")
-                crawl_product_detail._name_fail_saved = True
-            except Exception as e:
-                logger.error(f"디버깅 파일 저장 실패: {e}")
-
-    # 가격 - 상세 페이지의 가격만 선택 (추천 제품 제외)
+    # 가격 추출
     try:
-        # 1순위: .prod-price--detail 내부의 가격
         price_element = driver.find_element(By.CSS_SELECTOR, ".prod-price--detail .price-value .value")
         product["price"] = price_element.text.strip().replace(",", "")
     except:
         try:
-            # 2순위: .inner-box 내부의 첫 번째 가격
             price_element = driver.find_element(By.CSS_SELECTOR, ".inner-box .price-value .value")
             product["price"] = price_element.text.strip().replace(",", "")
         except:
             pass
 
-    # 페이지 품번 확인 (검증용)
-    page_product_code = None
+    # 페이지 품번 확인 및 검증
     try:
         code_text = driver.find_element(By.CLASS_NAME, "code-text").text
         match = re.search(r"품번\s*(\d+)", code_text)
         if match:
             page_product_code = match.group(1)
-            logger.debug(f"페이지 품번: {page_product_code}")
-
-            # URL pdNo와 비교
             if page_product_code != url_pdno:
-                logger.warning(f"품번 불일치 감지!")
-                logger.warning(f"   URL pdNo: {url_pdno}")
-                logger.warning(f"   페이지 품번: {page_product_code}")
-                logger.warning(f"   제품명: {product['name']}")
-
-                # 디버깅: 첫 번째 불일치 케이스만 HTML 저장
-                if not hasattr(crawl_product_detail, '_mismatch_saved'):
-                    try:
-                        os.makedirs('logs/mismatch', exist_ok=True)
-
-                        # HTML 저장
-                        html_file = f"logs/mismatch/mismatch_{url_pdno}_vs_{page_product_code}.html"
-                        with open(html_file, 'w', encoding='utf-8') as f:
-                            f.write(driver.page_source)
-
-                        # 스크린샷 저장
-                        screenshot_file = f"logs/mismatch/mismatch_{url_pdno}_vs_{page_product_code}.png"
-                        driver.save_screenshot(screenshot_file)
-
-                        logger.info(f"디버깅 파일 저장: {html_file}")
-                        logger.info(f"스크린샷 저장: {screenshot_file}")
-                        crawl_product_detail._mismatch_saved = True
-                    except Exception as e:
-                        logger.error(f"디버깅 파일 저장 실패: {e}")
-
-                # 페이지 품번을 제품 코드로 사용 2
-                logger.warning(f"   → 페이지 품번({page_product_code})을 제품 코드로 사용합니다")
+                logger.warning(f"품번 불일치! URL: {url_pdno}, 페이지: {page_product_code}")
                 product["product_code"] = page_product_code
-            else:
-                logger.debug(f"품번 일치: {url_pdno}")
-        else:
-            logger.debug(f"code-text 있지만 품번 패턴 없음: {code_text}")
-    except Exception as e:
-        logger.debug(f"페이지 품번 추출 실패 (URL pdNo 사용): {str(e)}")
+                url_pdno = page_product_code
+    except:
+        pass
 
     # 제조국
     try:
@@ -461,19 +358,170 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
     except:
         pass
 
-    # 제품 코드 검증
-    if not product["product_code"]:
-        logger.error(f"제품 코드 없음 - 스킵: {product['name']}")
+    return url_pdno
+
+
+def _extract_reviews(driver, product_code: str) -> list:
+    """리뷰 크롤링"""
+    reviews = []
+
+    for page in range(1, 999):
+        time.sleep(1)
+        review_elements = driver.find_elements(By.CLASS_NAME, "review-detail")
+        logger.debug(f"{page}페이지 리뷰 수: {len(review_elements)}")
+
+        for r in review_elements:
+            try:
+                date = r.find_element(By.CLASS_NAME, "cw-bar-list").text.split()[0]
+                user_raw = r.find_element(By.CLASS_NAME, "con-writer-id").text.strip()
+                rating_raw = r.find_element(By.CLASS_NAME, "hiddenText").text.strip()
+                text = r.find_element(By.CSS_SELECTOR, ".review-desc .cont").text.strip()
+                image_count = len(r.find_elements(By.CSS_SELECTOR, ".swiper-wrapper img"))
+                rating = extract_rating(rating_raw)
+                user_id = user_id_map[user_raw]
+
+                reviews.append({
+                    "product_code": product_code,
+                    "date": date,
+                    "user_masked": user_raw,
+                    "user": user_id,
+                    "rating": rating,
+                    "text": text,
+                    "image_count": image_count,
+                })
+            except:
+                continue
+
+        # 다음 페이지
+        try:
+            next_btn = driver.find_element(By.CLASS_NAME, "btn-next")
+            next_class = next_btn.get_attribute("class") or ""
+            next_style = next_btn.get_attribute("style") or ""
+
+            if ("disabled" in next_class) or (not next_btn.is_enabled()) or ("pointer-events: none" in next_style):
+                break
+
+            driver.execute_script("arguments[0].click();", next_btn)
+            time.sleep(1)
+        except:
+            break
+
+    return reviews
+
+
+def _extract_ingredients_and_certifications(driver, product: dict) -> list:
+    """성분 및 인증 정보 추출"""
+    ingredients = []
+
+    # 할랄/비건 인증 정보 추출
+    try:
+        editor_content = driver.find_element(By.CSS_SELECTOR, "div.editor-content")
+        content_text = editor_content.text.lower()
+
+        certifications = []
+        if '할랄' in content_text or 'halal' in content_text:
+            certifications.append('할랄')
+            logger.info("할랄 인증 제품 발견")
+        if '비건' in content_text or 'vegan' in content_text:
+            certifications.append('비건')
+            logger.info("비건 인증 제품 발견")
+
+        if certifications:
+            product['certifications'] = ', '.join(certifications)
+    except:
+        pass
+
+    # 성분 추출
+    try:
+        ingredients = extract_ingredients_multi_source(
+            driver, product['product_code'], product['name']
+        )
+        logger.info(f"성분 추출 완료: {len(ingredients)}개")
+
+        # 할랄/비건 판정
+        if ingredients:
+            _determine_halal_vegan_status(product, ingredients)
+
+    except Exception as e:
+        logger.error(f"성분 추출 오류: {str(e)}")
+        ingredients = []
+
+    return ingredients
+
+
+def _determine_halal_vegan_status(product: dict, ingredients: list):
+    """할랄/비건 인증 가능 여부 판정"""
+    # 비건 판정
+    non_vegan = [ing for ing in ingredients if ing.get('can_vegan') == 'No']
+    if non_vegan:
+        product['can_비건'] = 'No'
+        logger.info(f"비건 부적합: {len(non_vegan)}개 동물성 성분")
+    elif any(ing.get('can_vegan') == 'Unknown' for ing in ingredients):
+        product['can_비건'] = 'Unknown'
+    else:
+        product['can_비건'] = 'Yes'
+
+    # 할랄 판정
+    haram = [ing for ing in ingredients if ing.get('can_halal') == 'No']
+    questionable = [ing for ing in ingredients if ing.get('can_halal') == 'Questionable']
+
+    if haram:
+        product['can_할랄인증'] = 'No'
+        logger.info(f"할랄 부적합: {len(haram)}개 부적합 성분")
+    elif questionable:
+        product['can_할랄인증'] = 'Questionable'
+        logger.info(f"할랄 원료확인 필요: {len(questionable)}개 의심 성분")
+    elif any(ing.get('can_halal') == 'Unknown' for ing in ingredients):
+        product['can_할랄인증'] = 'Unknown'
+    else:
+        product['can_할랄인증'] = 'Yes'
+
+
+def crawl_product_detail(driver, url, category_home, category_1, category_2, crawl_reviews=True, crawl_ingredients=True):
+    """제품 상세 정보 크롤링 (리팩토링됨)"""
+    # URL에서 pdNo 추출
+    url_pdno_match = re.search(r"pdNo=([A-Z0-9]+)", url)
+    if not url_pdno_match:
+        logger.error(f"URL에서 pdNo 추출 실패: {url}")
         return None, [], []
 
-    # 최종 제품 정보 로그
-    logger.info(f"제품 정보 수집 완료:")
-    logger.info(f"   - 제품 코드: {product['product_code']}")
-    logger.info(f"   - 제품명: {product['name'][:50]}...")
-    logger.info(f"   - 브랜드: {product['brand']}")
-    logger.info(f"   - 가격: {product['price']}원")
+    url_pdno = url_pdno_match.group(1)
+    logger.info(f"제품 크롤링 시작 - pdNo: {url_pdno}")
 
-    # 5천원 초과 제품 제외
+    # 제품 정보 초기화
+    product = {
+        "product_code": url_pdno,
+        "category_home": category_home,
+        "category_1": category_1,
+        "category_2": category_2,
+        "brand": "",
+        "name": "",
+        "price": "",
+        "country": "",
+        "likes": 0,
+        "shares": 0,
+        "url": url,
+        "can_할랄인증": "Unknown",
+        "can_비건": "Unknown",
+        "certifications": "",
+    }
+
+    # 1. 페이지 로드
+    driver.get(url)
+    _wait_for_page_load(driver, url_pdno)
+
+    # 2. 기본 정보 추출
+    url_pdno = _extract_basic_info(driver, product, url_pdno, category_2)
+
+    # 3. 유효성 검증
+    if not product["product_code"]:
+        logger.error(f"제품 코드 없음 - 스킵")
+        return None, [], []
+
+    if not product["name"]:
+        logger.error(f"제품명 추출 실패 - pdNo: {url_pdno}")
+
+    # 4. 가격 검증 (5천원 초과 제외)
     try:
         if product["price"] and int(product["price"]) > 5000:
             logger.info(f"제외 (가격 초과): {product['name']} | {product['price']}원")
@@ -481,127 +529,20 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
     except:
         pass
 
-    # 리뷰 크롤링
+    logger.info(f"제품 정보: {product['product_code']} | {product['name'][:40]} | {product['price']}원")
+
+    # 5. 리뷰 크롤링
+    reviews = []
     if crawl_reviews:
-        logger.info(f"리뷰 수집 시작: {product['name']}")
-        for page in range(1, 999):
-            time.sleep(1)
-            review_elements = driver.find_elements(By.CLASS_NAME, "review-detail")
-            logger.debug(f"{page}페이지 리뷰 수: {len(review_elements)}")
+        logger.info(f"리뷰 수집 시작")
+        reviews = _extract_reviews(driver, product["product_code"])
+        logger.info(f"리뷰 수집 완료: {len(reviews)}개")
 
-            for r in review_elements:
-                try:
-                    date = r.find_element(By.CLASS_NAME, "cw-bar-list").text.split()[0]
-                    user_raw = r.find_element(By.CLASS_NAME, "con-writer-id").text.strip()
-                    rating_raw = r.find_element(By.CLASS_NAME, "hiddenText").text.strip()
-                    text = r.find_element(By.CSS_SELECTOR, ".review-desc .cont").text.strip()
-                    image_count = len(r.find_elements(By.CSS_SELECTOR, ".swiper-wrapper img"))
-                    rating = extract_rating(rating_raw)
-                    user_id = user_id_map[user_raw]
-
-                    reviews.append({
-                        "product_code": product["product_code"],
-                        "date": date,
-                        "user_masked": user_raw,
-                        "user": user_id,
-                        "rating": rating,
-                        "text": text,
-                        "image_count": image_count,
-                    })
-                except:
-                    continue
-
-            # 다음 페이지
-            try:
-                next_btn = driver.find_element(By.CLASS_NAME, "btn-next")
-                next_class = next_btn.get_attribute("class") or ""
-                next_style = next_btn.get_attribute("style") or ""
-
-                if ("disabled" in next_class) or (not next_btn.is_enabled()) or ("pointer-events: none" in next_style):
-                    logger.debug("마지막 페이지 도달")
-                    break
-
-                driver.execute_script("arguments[0].click();", next_btn)
-                time.sleep(1)
-            except:
-                logger.debug("다음 버튼 없음")
-                break
-
-    # 성분 크롤링
+    # 6. 성분 크롤링
+    ingredients = []
     if crawl_ingredients:
-        logger.info(f"성분 수집 시작 (다중 소스): pdNo: {product['product_code']} | 제품명: {product['name'][:40]}")
-
-        # 할랄/비건 인증 정보 추출
-        certifications = []
-        try:
-            # 제품 설명에서 할랄/비건 키워드 검색
-            editor_content = driver.find_element(By.CSS_SELECTOR, "div.editor-content")
-            content_text = editor_content.text.lower()
-
-            if '할랄' in content_text or 'halal' in content_text:
-                certifications.append('할랄')
-                logger.info("할랄 인증 제품 발견")
-
-            if '비건' in content_text or 'vegan' in content_text:
-                certifications.append('비건')
-                logger.info("비건 인증 제품 발견")
-
-            if certifications:
-                product['certifications'] = ', '.join(certifications)
-        except:
-            pass
-
-        try:
-            # 새로운 다중 소스 성분 추출 함수 사용
-            ingredients = extract_ingredients_multi_source(
-                driver,
-                product['product_code'],
-                product['name']
-            )
-
-            logger.info(f"성분 추출 완료: {len(ingredients)}개 (다중 소스 검증)")
-
-            # 할랄/비건 인증 가능 여부 판정
-            if ingredients:
-                # 비건 판정: 동물성 성분이 하나라도 있으면 No
-                non_vegan_ingredients = [ing for ing in ingredients if ing.get('can_vegan') == 'No']
-                if non_vegan_ingredients:
-                    product['can_비건'] = 'No'
-                    logger.info(f"비건 부적합: {len(non_vegan_ingredients)}개 동물성 성분 발견")
-                elif any(ing.get('can_vegan') == 'Unknown' for ing in ingredients):
-                    product['can_비건'] = 'Unknown'
-                else:
-                    product['can_비건'] = 'Yes'
-                    logger.info("비건 인증 가능")
-
-                # 할랄 판정: 부적합 성분이 하나라도 있으면 No
-                haram_ingredients = [ing for ing in ingredients if ing.get('can_halal') == 'No']
-                questionable_ingredients = [ing for ing in ingredients if ing.get('can_halal') == 'Questionable']
-
-                if haram_ingredients:
-                    product['can_할랄인증'] = 'No'
-                    logger.info(f"할랄 부적합: {len(haram_ingredients)}개 부적합 성분 발견")
-                elif questionable_ingredients:
-                    product['can_할랄인증'] = 'Questionable'
-                    logger.info(f"할랄 원료확인 필요: {len(questionable_ingredients)}개 의심 성분")
-                elif any(ing.get('can_halal') == 'Unknown' for ing in ingredients):
-                    product['can_할랄인증'] = 'Unknown'
-                else:
-                    product['can_할랄인증'] = 'Yes'
-                    logger.info("할랄 인증 가능")
-
-        except Exception as e:
-            logger.error(f"다중 소스 성분 추출 오류: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-            # 폴백: 간단한 성분 추출 로직 (실패 시 빈 리스트)
-            logger.warning("다중 소스 추출 실패 - 성분 정보 없음")
-            ingredients = []
-
-        # 성분 추출 실패 시 로그
-        if not ingredients:
-            logger.warning(f"성분 정보 추출 실패: {product['name']}")
+        logger.info(f"성분 수집 시작")
+        ingredients = _extract_ingredients_and_certifications(driver, product)
 
     return product, reviews, ingredients
 

@@ -119,18 +119,24 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
         logger.info(f"이미지 다운로드 완료: {image.size[0]}x{image.size[1]}")
 
         # 1. 성분표 영역 자동 크롭 (선택적)
+        crop_success = False
+        original_image = image
         if auto_crop:
             try:
                 from .ingredient_detector import crop_ingredient_region
-                original_image = image
                 image = crop_ingredient_region(image, auto_detect=True, expand_margin=30)
 
-                if image.size != original_image.size:
+                # 크롭이 성공적으로 수행되었는지 확인 (크기가 줄어들어야 함)
+                if image.size[0] < original_image.size[0] * 0.9 or image.size[1] < original_image.size[1] * 0.9:
+                    crop_success = True
                     logger.info(f"성분표 영역 크롭 완료: {original_image.size} → {image.size}")
+                else:
+                    logger.warning("크롭 영역이 원본과 비슷합니다. 성분표 감지 실패로 판단.")
+                    image = original_image
             except Exception as e:
                 logger.warning(f"성분표 영역 크롭 실패 (원본 사용): {str(e)}")
 
-        # 2. Clova OCR 시도 (전체 이미지)
+        # 2. Clova OCR 시도
         clova_text = None
         if use_clova:
             try:
@@ -138,11 +144,31 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
                 clova_client = get_clova_client()
 
                 if clova_client.is_available():
-                    # URL 직접 전달 (Clova는 URL 지원)
-                    clova_text = clova_client.extract_text_from_url(url)
+                    # 크롭 성공 시 크롭된 이미지 바이트 전달, 실패 시 원본 URL 전달
+                    if crop_success:
+                        img_byte_arr = BytesIO()
+                        image.save(img_byte_arr, format='PNG')
+                        img_bytes = img_byte_arr.getvalue()
+                        logger.info(f"Clova OCR 호출 (크롭된 이미지: {image.size[0]}x{image.size[1]})")
+                        clova_text = clova_client.extract_text_from_bytes(img_bytes, image_format='png')
+                    else:
+                        # 크롭 실패 시 원본 URL로 호출 (더 효율적)
+                        logger.info(f"Clova OCR 호출 (원본 URL 사용)")
+                        clova_text = clova_client.extract_text_from_url(url)
 
-                    if clova_text and len(clova_text) > 100:
-                        logger.info(f"Clova OCR 성공: {len(clova_text)}자 추출")
+                    # 성분 키워드 + 실제 성분명이 함께 있어야 함
+                    HEADER_KEYWORDS = ['전성분', '성분:', '모든성분', '화장품법']
+                    ACTUAL_INGREDIENTS = ['정제수', '글리세린', '부틸렌글라이콜', '나이아신아마이드', '토코페롤', '히알루론산']
+
+                    # 헤더 키워드 또는 영문 Ingredients가 있으면서 실제 성분명도 있어야 함
+                    has_header = any(kw in clova_text for kw in HEADER_KEYWORDS) if clova_text else False
+                    has_actual_ingredients = sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text) >= 2 if clova_text else False
+
+                    # Clova 결과 검증: (헤더 + 2개 이상 성분) 또는 (3개 이상 성분)
+                    has_ingredient_keywords = (has_header and has_actual_ingredients) or sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text) >= 3 if clova_text else False
+
+                    if clova_text and len(clova_text) > 50 and has_ingredient_keywords:
+                        logger.info(f"Clova OCR 성공: {len(clova_text)}자 추출 (성분 키워드 확인됨)")
 
                         # Clova 결과를 단일 섹션으로 반환
                         return [{
@@ -153,7 +179,8 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
                             'method': 'clova_ocr'
                         }]
                     else:
-                        logger.warning("Clova OCR 결과가 부족합니다. EasyOCR로 폴백합니다.")
+                        reason = "성분 키워드 없음" if clova_text and len(clova_text) > 50 else f"{len(clova_text) if clova_text else 0}자"
+                        logger.warning(f"Clova OCR 결과 부적합 ({reason}). EasyOCR로 폴백합니다.")
             except Exception as e:
                 logger.warning(f"Clova OCR 실패 (EasyOCR로 폴백): {str(e)}")
 

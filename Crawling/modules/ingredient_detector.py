@@ -70,6 +70,51 @@ def detect_text_regions(image_array: np.ndarray,
         return []
 
 
+def _scan_bottom_for_keywords(image_array: np.ndarray, keywords: List[str],
+                              scan_height: int = 3500) -> Optional[Tuple[int, int, int, int]]:
+    """
+    매우 긴 이미지의 하단을 직접 스캔하여 성분표 키워드 탐색
+
+    Args:
+        image_array: NumPy 이미지 배열
+        keywords: 검색할 키워드 리스트
+        scan_height: 스캔할 하단 높이 (픽셀)
+
+    Returns:
+        (x, y, w, h) 성분표 영역 또는 None
+    """
+    try:
+        import easyocr
+        reader = easyocr.Reader(['ko', 'en'], gpu=False, verbose=False)
+    except ImportError:
+        return None
+
+    image_height = image_array.shape[0]
+    image_width = image_array.shape[1]
+
+    # 하단 영역 크롭
+    start_y = max(0, image_height - scan_height)
+    bottom_section = image_array[start_y:image_height, :]
+
+    logger.info(f"긴 이미지 하단 직접 스캔: y={start_y}~{image_height} ({scan_height}px)")
+
+    try:
+        result = reader.readtext(bottom_section, detail=0, paragraph=True)
+        text = ' '.join(result)
+
+        # 키워드 탐색
+        for keyword in keywords:
+            if keyword in text:
+                logger.info(f"하단 직접 스캔에서 키워드 발견: '{keyword}'")
+                # 전체 하단 영역을 성분표 영역으로 반환
+                return (0, start_y, image_width, scan_height)
+
+    except Exception as e:
+        logger.debug(f"하단 직접 스캔 실패: {str(e)}")
+
+    return None
+
+
 def detect_ingredient_region(image_array: np.ndarray,
                              keywords: List[str] = None,
                              prefer_bottom: bool = True) -> Optional[Tuple[int, int, int, int]]:
@@ -77,6 +122,7 @@ def detect_ingredient_region(image_array: np.ndarray,
     성분표 영역 감지 (키워드 기반)
 
     전략:
+    0. 매우 긴 이미지(>5000px)는 하단 3500px 직접 스캔
     1. 이미지를 여러 영역으로 분할
     2. 각 영역에서 간단한 OCR 수행
     3. "전성분", "성분:", "INGREDIENTS" 키워드 포함 여부 확인
@@ -91,7 +137,51 @@ def detect_ingredient_region(image_array: np.ndarray,
         (x, y, w, h) 성분표 영역 또는 None
     """
     if keywords is None:
-        keywords = ['전성분', '성분:', 'INGREDIENTS', 'Ingredients', '화장품법']
+        # 성분표 키워드 확장 (다양한 표현 + OCR 오인식 포함)
+        keywords = [
+            # 한글 키워드
+            '전성분', '성분:', '성분 :', '모든성분', '모든 성분',
+            '화장품법', '화장품법_', '화장품법에',  # OCR 오인식 포함
+            '기재표시', '기재 표시', '기재·표시',
+            '표시하여야', '하여야하는', '하여야 하는',
+
+            # 자주 나오는 첫 번째 성분 (OCR 오인식 포함)
+            '정제수', '글리세린', '부틸렌글라이콜', '부틸렌글라이',
+            '티타늄디옥사이드', '티타늄디욱사이드', '티타눕디욱',  # OCR 오인식
+            '징크옥사이드', '다이메티콘', '다이메티',
+            '나이아신아마이드', '히알루론산',
+
+            # 영문 키워드 (OCR 오인식 변형 포함)
+            'INGREDIENTS', 'Ingredients', 'ingredients',
+            'INGREDIENT', 'Ingredient', 'ingredient',  # 단수형
+            'INGREDI', 'Ingredi', 'ingredi',  # 잘린 형태
+            'lngredients', 'lngredient',  # l/I 혼동
+            'FULL INGREDIENTS', 'Full Ingredients',
+            'ALL INGREDIENTS', 'All Ingredients',
+
+            # 공백/줄바꿈 변형
+            'INGRE DIENTS', 'Ingre dients',
+            'ING REDIENTS', 'IN GREDIENTS',
+
+            # 자주 나오는 영문 성분 (첫 번째 성분)
+            'Water', 'Aqua', 'WATER', 'AQUA',
+            'Glycerin', 'GLYCERIN', 'Glycerine',
+            'Butylene', 'BUTYLENE', 'Butylene Glycol',
+            'Titanium', 'TITANIUM', 'Titanium Dioxide',
+            'Dimethicone', 'DIMETHICONE',
+            'Niacinamide', 'NIACINAMIDE',
+            'Cetyl', 'CETYL', 'Stearic', 'STEARIC',
+            'Propylene', 'PROPYLENE', 'Sodium', 'SODIUM',
+        ]
+
+    # === 매우 긴 이미지 처리 (>5000px) ===
+    image_height = image_array.shape[0]
+    if image_height > 5000:
+        logger.info(f"매우 긴 이미지 감지: {image_height}px - 하단 직접 스캔 시도")
+        bottom_result = _scan_bottom_for_keywords(image_array, keywords, scan_height=3500)
+        if bottom_result:
+            return bottom_result
+        logger.warning("하단 직접 스캔 실패 - 기존 영역 감지 방식으로 폴백")
 
     try:
         # 텍스트 영역 감지
@@ -118,7 +208,7 @@ def detect_ingredient_region(image_array: np.ndarray,
             return text_regions[0] if text_regions else None
 
         # 각 영역을 스캔하여 키워드 찾기
-        for region in text_regions[:5]:  # 상위 5개 영역만 검사
+        for region in text_regions[:10]:  # 상위 10개 영역 검사
             x, y, w, h = region
 
             # 영역 크롭
@@ -141,8 +231,36 @@ def detect_ingredient_region(image_array: np.ndarray,
                 logger.debug(f"영역 OCR 실패: {str(e)}")
                 continue
 
-        # 키워드를 못 찾았으면 가장 큰 영역 반환 (폴백)
-        logger.warning("성분표 키워드를 찾지 못했습니다. 가장 큰 텍스트 영역을 반환합니다.")
+        # 키워드를 못 찾았으면 하단 영역 중 텍스트가 가장 많은 영역 선택
+        logger.warning("성분표 키워드를 찾지 못했습니다. 하단 영역 중 텍스트 밀도가 높은 영역을 선택합니다.")
+
+        # 하단 50% 영역만 필터링 (성분표는 보통 이미지 하단에 위치)
+        image_height = image_array.shape[0]
+        bottom_regions = [r for r in text_regions if r[1] + r[3]/2 > image_height * 0.5]
+
+        if bottom_regions:
+            # 텍스트 밀도 기반 선택 (면적 대비 OCR 결과가 많은 영역)
+            best_region = None
+            best_text_len = 0
+
+            for region in bottom_regions[:3]:  # 상위 3개만 검사
+                x, y, w, h = region
+                cropped = image_array[y:y+h, x:x+w]
+                try:
+                    result = reader.readtext(cropped, detail=0, paragraph=False)
+                    text_len = sum(len(t) for t in result)
+                    if text_len > best_text_len:
+                        best_text_len = text_len
+                        best_region = region
+                except:
+                    continue
+
+            if best_region and best_text_len > 50:
+                logger.info(f"하단 영역에서 텍스트 밀도 높은 영역 선택: {best_text_len}자")
+                return best_region
+
+        # 최종 폴백: 가장 큰 영역
+        logger.warning("하단 영역 검색 실패. 가장 큰 텍스트 영역을 반환합니다.")
         return text_regions[0] if text_regions else None
 
     except Exception as e:

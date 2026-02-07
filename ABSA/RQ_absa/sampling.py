@@ -1,13 +1,15 @@
 """
 2단계 층화 샘플링 + 전체 레벨 sentiment 균형 조정
 
-1단계: 대분류(category_1)별 쿼터 배정 (비례 + 최소 보장)
-2단계: 소분류(category_2)별 쿼터 배정 (비례 + 최소 보장)
-3단계: 소분류 단위에서 가용 데이터 범위 내 자연 추출 (sentiment 강제 X)
-4단계: 전체 2만 레벨에서 sentiment 균형 조정 (부족분 대분류에서 추가 확보)
+1단계: 저품질 리뷰 필터링 (중복 텍스트, 외국어, 빈 텍스트 등)
+2단계: 대분류(category_1)별 쿼터 배정 (비례 + 최소 보장)
+3단계: 소분류(category_2)별 쿼터 배정 (비례 + 최소 보장)
+4단계: 소분류 단위에서 가용 데이터 범위 내 자연 추출 (sentiment 강제 X)
+5단계: 전체 2만 레벨에서 sentiment 균형 조정 (부족분 대분류에서 추가 확보)
 """
 import pandas as pd
 import numpy as np
+import re
 from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 
@@ -29,7 +31,11 @@ class NaturalStratifiedSampler:
         category_2_min_floor: int = 200,
         skip_cat2_categories: Optional[List[str]] = None,
         target_sentiment_distribution: Optional[Dict[str, float]] = None,
-        random_state: int = 42
+        random_state: int = 42,
+        filter_duplicates: bool = True,
+        filter_foreign: bool = True,
+        min_korean_ratio: float = 0.3,
+        text_column: str = 'text'
     ):
         """
         Args:
@@ -41,6 +47,10 @@ class NaturalStratifiedSampler:
             skip_cat2_categories: 소분류 쿼터 배정을 스킵할 대분류 목록
             target_sentiment_distribution: 목표 sentiment 비율 (전체 레벨)
             random_state: 랜덤 시드
+            filter_duplicates: 중복 텍스트 리뷰 필터링 여부
+            filter_foreign: 외국어/저품질 리뷰 필터링 여부
+            min_korean_ratio: 최소 한국어 비율 (이 비율 미만이면 외국어로 판단)
+            text_column: 텍스트 컬럼명
         """
         self.target_size = target_size
         self.category_1_column = category_1_column
@@ -49,6 +59,10 @@ class NaturalStratifiedSampler:
         self.category_2_min_floor = category_2_min_floor
         self.skip_cat2_categories = skip_cat2_categories or []
         self.random_state = random_state
+        self.filter_duplicates = filter_duplicates
+        self.filter_foreign = filter_foreign
+        self.min_korean_ratio = min_korean_ratio
+        self.text_column = text_column
 
         # 목표 sentiment 분포 (전체 레벨 기준)
         if target_sentiment_distribution is None:
@@ -59,6 +73,93 @@ class NaturalStratifiedSampler:
             }
         else:
             self.target_sentiment_distribution = target_sentiment_distribution
+
+    def _filter_low_quality_reviews(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        저품질 리뷰 필터링
+        - 중복 텍스트 제거 (첫 번째 유지)
+        - 외국어/저품질 리뷰 제거
+        """
+        original_count = len(df)
+        df = df.copy()
+
+        print("\n" + "="*60)
+        print("저품질 리뷰 필터링")
+        print("="*60)
+
+        # 1. 중복 텍스트 제거
+        if self.filter_duplicates:
+            before = len(df)
+            df = df.drop_duplicates(subset=[self.text_column], keep='first')
+            removed = before - len(df)
+            print(f"중복 텍스트 제거: {removed:,}개 ({removed/original_count*100:.2f}%)")
+
+        # 2. 외국어/저품질 리뷰 제거
+        if self.filter_foreign:
+            before = len(df)
+            quality_mask = df[self.text_column].apply(self._is_valid_korean_review)
+            df = df[quality_mask]
+            removed = before - len(df)
+            print(f"외국어/저품질 제거: {removed:,}개 ({removed/original_count*100:.2f}%)")
+
+        total_removed = original_count - len(df)
+        print(f"\n총 필터링: {total_removed:,}개 ({total_removed/original_count*100:.2f}%)")
+        print(f"남은 리뷰: {len(df):,}개")
+
+        return df
+
+    def _is_valid_korean_review(self, text: str) -> bool:
+        """
+        유효한 한국어 리뷰인지 판별
+
+        제외 대상:
+        - 빈 텍스트 또는 NaN
+        - 한국어 비율이 min_korean_ratio 미만
+        - 반복 패턴만 있는 텍스트 (ㅋㅋㅋ, ㅎㅎㅎ 등)
+        - 자음/모음만 있는 텍스트
+        """
+        # NaN 또는 빈 텍스트
+        if pd.isna(text) or not isinstance(text, str):
+            return False
+
+        text = text.strip()
+        if len(text) == 0:
+            return False
+
+        # 한글 (자모 포함)
+        korean_chars = len(re.findall(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', text))
+        # 영어
+        english_chars = len(re.findall(r'[a-zA-Z]', text))
+        # 일본어 (히라가나, 가타카나)
+        japanese_chars = len(re.findall(r'[\u3040-\u309F\u30A0-\u30FF]', text))
+        # 중국어 (한자, 한국어 한자 제외 범위)
+        chinese_chars = len(re.findall(r'[\u4E00-\u9FFF]', text))
+        # 숫자, 공백, 특수문자 제외한 총 문자
+        total_chars = korean_chars + english_chars + japanese_chars + chinese_chars
+
+        if total_chars == 0:
+            return False
+
+        korean_ratio = korean_chars / total_chars
+
+        # 한국어 비율이 낮으면 외국어로 판단
+        if korean_ratio < self.min_korean_ratio:
+            return False
+
+        # 반복 패턴만 있는지 확인 (ㅋㅋㅋ, ㅎㅎㅎ, ... 등)
+        # 자음/모음 제거 후 실제 한글 단어가 있는지 확인
+        actual_korean = re.findall(r'[가-힣]+', text)
+        if len(actual_korean) == 0:
+            # 자음/모음만 있는 경우
+            consonants_only = re.findall(r'[ㄱ-ㅎㅏ-ㅣ]+', text)
+            # 의미 있는 내용 없이 자음/모음만 반복
+            if consonants_only:
+                # 유니크한 자음/모음 개수가 2개 이하면 의미없는 반복으로 판단
+                unique_jamo = set(''.join(consonants_only))
+                if len(unique_jamo) <= 2:
+                    return False
+
+        return True
 
     def _assign_sentiment_group(self, df: pd.DataFrame) -> pd.DataFrame:
         """평점 기반 sentiment 그룹 할당"""
@@ -113,10 +214,11 @@ class NaturalStratifiedSampler:
         """
         자연 분포 기반 층화 샘플링 수행
 
-        1. 대분류별 쿼터 배정
-        2. 소분류별 쿼터 배정
-        3. 소분류 단위 자연 추출 (sentiment 강제 X)
-        4. 전체 레벨 sentiment 균형 조정
+        1. 저품질 리뷰 필터링 (중복, 외국어 등)
+        2. 대분류별 쿼터 배정
+        3. 소분류별 쿼터 배정
+        4. 소분류 단위 자연 추출 (sentiment 강제 X)
+        5. 전체 레벨 sentiment 균형 조정
         """
         print(f"원본 데이터: {len(df):,}개")
         print(f"목표 샘플: {self.target_size:,}개")
@@ -124,6 +226,12 @@ class NaturalStratifiedSampler:
         print(f"소분류별 최소 보장: {self.category_2_min_floor}개")
         if self.skip_cat2_categories:
             print(f"소분류 스킵 대분류: {self.skip_cat2_categories}")
+
+        # =========================================
+        # 0단계: 저품질 리뷰 필터링
+        # =========================================
+        if self.filter_duplicates or self.filter_foreign:
+            df = self._filter_low_quality_reviews(df)
 
         # sentiment 그룹 할당
         df = self._assign_sentiment_group(df)
@@ -422,6 +530,10 @@ def load_and_sample_reviews(
     skip_cat2_categories: List[str] = None,
     target_sentiment_distribution: Dict[str, float] = None,
     random_state: int = 42,
+    filter_duplicates: bool = True,
+    filter_foreign: bool = True,
+    min_korean_ratio: float = 0.3,
+    text_column: str = 'text',
     **kwargs
 ) -> pd.DataFrame:
     """
@@ -438,6 +550,10 @@ def load_and_sample_reviews(
         skip_cat2_categories: 소분류 쿼터 배정 스킵할 대분류 목록
         target_sentiment_distribution: 목표 sentiment 비율 (전체 레벨)
         random_state: 랜덤 시드
+        filter_duplicates: 중복 텍스트 리뷰 필터링 여부
+        filter_foreign: 외국어/저품질 리뷰 필터링 여부
+        min_korean_ratio: 최소 한국어 비율 (이 비율 미만이면 외국어로 판단)
+        text_column: 텍스트 컬럼명
 
     Returns:
         샘플링된 데이터프레임
@@ -454,7 +570,11 @@ def load_and_sample_reviews(
         category_2_min_floor=category_2_min_floor,
         skip_cat2_categories=skip_cat2_categories,
         target_sentiment_distribution=target_sentiment_distribution,
-        random_state=random_state
+        random_state=random_state,
+        filter_duplicates=filter_duplicates,
+        filter_foreign=filter_foreign,
+        min_korean_ratio=min_korean_ratio,
+        text_column=text_column
     )
 
     sampled_df = sampler.sample(df)
