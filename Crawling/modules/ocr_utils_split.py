@@ -174,12 +174,25 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
                         '미네랄오일', '시어버터', '호호바', '스쿠알란',
                     ]
 
-                    # 헤더 키워드가 있으면서 실제 성분명도 있어야 함
-                    has_header = any(kw in clova_text for kw in HEADER_KEYWORDS) if clova_text else False
-                    ingredient_count = sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text) if clova_text else 0
+                    # 줄바꿈/공백 제거한 텍스트로 검증 (Clova OCR이 단어별로 줄바꿈하는 경우 대응)
+                    clova_text_flat = clova_text.replace('\n', ' ').replace('  ', ' ') if clova_text else ''
 
-                    # Clova 결과 검증: (헤더 + 1개 이상 성분) 또는 (2개 이상 성분)
-                    has_ingredient_keywords = (has_header and ingredient_count >= 1) or ingredient_count >= 2 if clova_text else False
+                    # 헤더 키워드가 있으면서 실제 성분명도 있어야 함
+                    has_header = any(kw in clova_text_flat for kw in HEADER_KEYWORDS) if clova_text_flat else False
+                    ingredient_count = sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text_flat) if clova_text_flat else 0
+
+                    # 디버깅 로그 추가
+                    logger.info(f"Clova 검증: has_header={has_header}, ingredient_count={ingredient_count}, text_len={len(clova_text_flat)}")
+
+                    # Clova 결과 검증 (완화됨):
+                    # 1) 헤더 + 1개 이상 성분, 또는
+                    # 2) 2개 이상 성분, 또는
+                    # 3) 성분표 크롭 성공 + 텍스트 200자 이상 (크롭이 성공했으면 성분표일 가능성 높음)
+                    has_ingredient_keywords = (
+                        (has_header and ingredient_count >= 1) or
+                        ingredient_count >= 2 or
+                        (crop_success and len(clova_text_flat) > 200)
+                    ) if clova_text_flat else False
 
                     if clova_text and len(clova_text) > 50 and has_ingredient_keywords:
                         logger.info(f"Clova OCR 성공: {len(clova_text)}자 추출 (성분 키워드 확인됨)")
