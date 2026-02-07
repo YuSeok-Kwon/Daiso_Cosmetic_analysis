@@ -136,6 +136,19 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
             except Exception as e:
                 logger.warning(f"성분표 영역 크롭 실패 (원본 사용): {str(e)}")
 
+        # 1-1. 긴 이미지 하단 영역 추출 (성분표는 무조건 맨 하단에 위치)
+        # Clova OCR 장축 제한 1960px 초과 시 무조건 하단 크롭 (ingredient_detector 결과 무시)
+        exceeds_clova_limit = original_image.size[1] > 1960
+
+        if exceeds_clova_limit:
+            # Clova OCR 장축 제한 1960px에 맞춤
+            height = original_image.size[1]
+            bottom_height = min(int(height * 0.15), 1960)  # 하단 15% 또는 최대 1960px
+            bottom_start = height - bottom_height
+            image = original_image.crop((0, bottom_start, original_image.size[0], height))
+            crop_success = False  # 하단 크롭이므로 crop_success 초기화
+            logger.info(f"Clova 제한 초과 → 하단 크롭: {original_image.size} → {image.size} (y: {bottom_start}-{height})")
+
         # 2. Clova OCR 시도
         clova_text = None
         if use_clova:
@@ -144,20 +157,21 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
                 clova_client = get_clova_client()
 
                 if clova_client.is_available():
-                    # 크롭 성공 시 크롭된 이미지 바이트 전달, 실패 시 원본 URL 전달
-                    if crop_success:
+                    # 크롭/분할된 이미지는 바이트로 전달, 원본 그대로면 URL 전달
+                    image_was_modified = (image.size != original_image.size)
+
+                    if image_was_modified:
                         img_byte_arr = BytesIO()
                         image.save(img_byte_arr, format='PNG')
                         img_bytes = img_byte_arr.getvalue()
-                        logger.info(f"Clova OCR 호출 (크롭된 이미지: {image.size[0]}x{image.size[1]})")
+                        logger.info(f"Clova OCR 호출 (크롭/분할 이미지: {image.size[0]}x{image.size[1]})")
                         clova_text = clova_client.extract_text_from_bytes(img_bytes, image_format='png')
                     else:
-                        # 크롭 실패 시 원본 URL로 호출 (더 효율적)
+                        # 원본 그대로인 경우 URL로 호출 (더 효율적)
                         logger.info(f"Clova OCR 호출 (원본 URL 사용)")
                         clova_text = clova_client.extract_text_from_url(url)
 
                     # 성분 키워드 + 실제 성분명이 함께 있어야 함
-                    HEADER_KEYWORDS = ['전성분', '성분:', '모든성분', '화장품법', 'INGREDIENTS', 'Ingredients']
                     # 다양한 화장품 유형에서 자주 등장하는 성분들 (스킨케어, 클렌징, 헤어, 바디 등)
                     ACTUAL_INGREDIENTS = [
                         # 기본 성분
@@ -172,17 +186,27 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
                         '벤질알코올', '페녹시에탄올', '멘톨', '향료', '리모넨',
                         # 오일/왁스
                         '미네랄오일', '시어버터', '호호바', '스쿠알란',
+                        # 쉐이빙 제품 성분 추가
+                        '이소부탄', '팔미틱', '소르비톨', '코코넛', '프로판', '라우릭',
+                        '포타슘', '하이드록사이드', '피브이피',
                     ]
 
                     # 줄바꿈/공백 제거한 텍스트로 검증 (Clova OCR이 단어별로 줄바꿈하는 경우 대응)
                     clova_text_flat = clova_text.replace('\n', ' ').replace('  ', ' ') if clova_text else ''
+                    # 공백 완전 제거 버전 (헤더 키워드 검증용)
+                    clova_text_nospace = clova_text.replace('\n', '').replace(' ', '') if clova_text else ''
 
-                    # 헤더 키워드가 있으면서 실제 성분명도 있어야 함
-                    has_header = any(kw in clova_text_flat for kw in HEADER_KEYWORDS) if clova_text_flat else False
+                    # 헤더 키워드 검증 (공백 제거 후 검증 - "전 성분", "전\n성분" 등 대응)
+                    HEADER_KEYWORDS_NOSPACE = ['전성분', '성분:', '모든성분', '화장품법', 'INGREDIENTS', 'ingredients', '성분명', '[성분명]', '성분은']
+                    has_header = any(kw.replace(' ', '') in clova_text_nospace.lower() for kw in HEADER_KEYWORDS_NOSPACE) if clova_text_nospace else False
+
+                    # 실제 성분 개수 (공백 포함 텍스트에서)
                     ingredient_count = sum(1 for ing in ACTUAL_INGREDIENTS if ing in clova_text_flat) if clova_text_flat else 0
 
-                    # 디버깅 로그 추가
+                    # 디버깅 로그 (첫 100자 미리보기 추가)
+                    preview = clova_text_flat[:100].replace('\n', ' ') if clova_text_flat else ''
                     logger.info(f"Clova 검증: has_header={has_header}, ingredient_count={ingredient_count}, text_len={len(clova_text_flat)}")
+                    logger.debug(f"Clova 텍스트 미리보기: {preview}...")
 
                     # Clova 결과 검증 (완화됨):
                     # 1) 헤더 + 1개 이상 성분, 또는
