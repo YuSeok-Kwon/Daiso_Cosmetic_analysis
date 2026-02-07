@@ -762,29 +762,26 @@ def extract_from_text(text: str, source: str) -> list:
         if not part:
             continue
 
-        # 전체를 하나의 성분으로 시도 (OCR 정규화 적용)
-        part_valid = False
-        if len(part) >= 2:
-            normalized = normalize_ingredient_name(part)
-            if normalized and len(normalized) >= 2:
-                # 유효성 검증
-                is_valid, confidence, reason = is_valid_ingredient(normalized)
-                if is_valid and normalized not in seen:
-                    ingredients.append({'ingredient': normalized, 'source': source})
-                    seen.add(normalized)
-                    part_valid = True
-
-        # 핵심 개선: part 전체가 유효하면 sub_parts는 검사하지 않음 (과검출 방지)
-        # sub_parts는 KNOWN_INGREDIENTS에 있을 때만 허용 (더 엄격한 기준)
-        if not part_valid:
+        # 핵심 수정: 공백이 있으면 여러 성분일 가능성 → sub_parts 먼저 처리
+        # normalize_ingredient_name()이 공백을 제거하므로, 공백 분리를 먼저 수행
+        if ' ' in part:
             sub_parts = part.split()
             for sub in sub_parts:
                 if len(sub) >= 2:
                     normalized_sub = normalize_ingredient_name(sub)
                     if normalized_sub and len(normalized_sub) >= 2 and normalized_sub not in seen:
-                        # sub_parts는 KNOWN_INGREDIENTS에 있을 때만 허용
-                        if normalized_sub in KNOWN_INGREDIENTS:
+                        is_valid, confidence, reason = is_valid_ingredient(normalized_sub)
+                        if is_valid and confidence >= 0.85:
                             ingredients.append({'ingredient': normalized_sub, 'source': source})
                             seen.add(normalized_sub)
+        else:
+            # 단일 단어인 경우 전체를 하나의 성분으로 시도
+            if len(part) >= 2:
+                normalized = normalize_ingredient_name(part)
+                if normalized and len(normalized) >= 2:
+                    is_valid, confidence, reason = is_valid_ingredient(normalized)
+                    if is_valid and normalized not in seen:
+                        ingredients.append({'ingredient': normalized, 'source': source})
+                        seen.add(normalized)
 
     return ingredients
