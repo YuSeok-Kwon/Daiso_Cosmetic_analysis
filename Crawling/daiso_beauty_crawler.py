@@ -69,21 +69,33 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
                             all_ingredients[name]['sources'].append(ing['source'])
                             all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.1)
 
-        logger.info(f"ALT에서 성분 발견: 총 {len([k for k in all_ingredients if any('ALT' in s for s in all_ingredients[k]['sources'])])}개")
+        alt_count = len([k for k in all_ingredients if any('ALT' in s for s in all_ingredients[k]['sources'])])
+        logger.info(f"ALT에서 성분 발견: 총 {alt_count}개")
 
     except Exception as e:
         logger.debug(f"ALT 텍스트 추출 실패: {str(e)}")
+        alt_count = 0
 
-    # 소스 2: OCR (성분이 적을 때만 - 10개 미만)
-    if len(all_ingredients) < 10:
+    # 소스 2: OCR
+    # - ALT에서 10개 이상 발견: OCR로 교차 검증 (검증 모드)
+    # - ALT에서 10개 미만 발견: OCR로 추가 추출 (보완 모드)
+    run_ocr = True  # 항상 OCR 실행
+    ocr_mode = "검증" if alt_count >= 10 else "보완"
+
+    if run_ocr:
         try:
+            # ALT에서 추출된 성분 목록 (검증용)
+            alt_ingredients_set = set(all_ingredients.keys()) if ocr_mode == "검증" else set()
+
             pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img")
+            ocr_only_count = 0
+            verified_count = 0
 
             for idx, img in enumerate(pictures[-3:]):  # 마지막 3개 이미지만
                 src = img.get_attribute("src")
 
                 if src:
-                    logger.info(f"OCR 분석 중: 이미지 {idx + 1}")
+                    logger.info(f"OCR 분석 중 ({ocr_mode} 모드): 이미지 {idx + 1}")
 
                     sections = extract_text_from_image_url_split(src, num_sections=5)  # 5개 섹션으로 세분화
 
@@ -108,12 +120,22 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
 
                                 if is_valid and conf >= 0.5:
                                     if name not in all_ingredients:
+                                        # OCR에서만 발견된 새로운 성분
                                         all_ingredients[name] = {'confidence': conf, 'sources': [ing['source']], 'reason': reason}
+                                        ocr_only_count += 1
                                     else:
+                                        # ALT와 OCR 모두에서 발견 → 교차 검증 성공, 신뢰도 대폭 상승
                                         all_ingredients[name]['sources'].append(ing['source'])
-                                        all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.05)
+                                        if ocr_mode == "검증":
+                                            all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.2)
+                                            verified_count += 1
+                                        else:
+                                            all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.05)
 
-            logger.info(f"OCR에서 추가 성분: 총 {len([k for k in all_ingredients if any('OCR' in s for s in all_ingredients[k]['sources'])])}개")
+            if ocr_mode == "검증":
+                logger.info(f"OCR 교차 검증: {verified_count}개 성분 확인, OCR에서만 발견: {ocr_only_count}개")
+            else:
+                logger.info(f"OCR에서 추가 성분: 총 {len([k for k in all_ingredients if any('OCR' in s for s in all_ingredients[k]['sources'])])}개")
 
         except Exception as e:
             logger.error(f"OCR 실패: {str(e)}")
