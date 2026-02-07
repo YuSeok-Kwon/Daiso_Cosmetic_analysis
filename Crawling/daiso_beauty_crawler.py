@@ -7,6 +7,10 @@
 import os
 import time
 import re
+
+# .env 파일에서 환경변수 로드 (Clova OCR API 키 등)
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 import pandas as pd
 from collections import defaultdict
 from selenium import webdriver
