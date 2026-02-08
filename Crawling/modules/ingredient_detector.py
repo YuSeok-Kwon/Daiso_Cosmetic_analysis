@@ -141,6 +141,7 @@ def detect_ingredient_region(image_array: np.ndarray,
         keywords = [
             # 한글 키워드
             '전성분', '성분:', '성분 :', '모든성분', '모든 성분',
+            '[전성분]', '전성분]', '[전 성분]',  # 추가: 대괄호 포함 전성분 표기
             '[성분명]', '성분명]', '성분명', '성분은',  # 추가: 다양한 성분 표기
             '화장품법', '화장품법_', '화장품법에',  # OCR 오인식 포함
             '기재표시', '기재 표시', '기재·표시',
@@ -217,7 +218,7 @@ def detect_ingredient_region(image_array: np.ndarray,
 
             # OCR 수행 (빠른 모드)
             try:
-                result = reader.readtext(cropped, detail=0, paragraph=False)
+                result = reader.readtext(cropped, detail=0, paragraph=True)
                 text = ' '.join(result)
 
                 logger.debug(f"영역 ({x}, {y}, {w}, {h}): {text[:50]}")
@@ -248,7 +249,7 @@ def detect_ingredient_region(image_array: np.ndarray,
                 x, y, w, h = region
                 cropped = image_array[y:y+h, x:x+w]
                 try:
-                    result = reader.readtext(cropped, detail=0, paragraph=False)
+                    result = reader.readtext(cropped, detail=0, paragraph=True)
                     text_len = sum(len(t) for t in result)
                     if text_len > best_text_len:
                         best_text_len = text_len
