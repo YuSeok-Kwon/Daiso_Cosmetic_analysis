@@ -35,10 +35,12 @@ class OpenAIClient:
     """
     _instance = None
 
-    # Pricing (USD per 1K tokens) for gpt-4o-mini
+    # Pricing (USD per 1K tokens)
     PRICING = {
         "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-        "gpt-4o": {"input": 0.0025, "output": 0.01}
+        "gpt-4o": {"input": 0.0025, "output": 0.01},
+        "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},  # Judge 모델
+        "gpt-4.1": {"input": 0.002, "output": 0.008}
     }
 
     # Fixed aspect labels
@@ -332,3 +334,189 @@ class OpenAIClient:
     def save_cache(self):
         """Manually save cache"""
         self._save_cache()
+
+    def judge_review(
+        self,
+        text: str,
+        rating: int,
+        original_label: Dict,
+        risk_reasons: List[str],
+        model: str = "gpt-4.1-mini",
+        use_cache: bool = True
+    ) -> Dict:
+        """
+        Judge a labeling result for validation.
+
+        Args:
+            text: Original review text
+            rating: Rating (1-5)
+            original_label: Original labeling result
+            risk_reasons: List of risk reasons from sampling
+            model: OpenAI model to use for judging
+            use_cache: Whether to use cache
+
+        Returns:
+            Dict with judgment, issues, fixed_label, confidence, reason
+        """
+        # Build judge prompt
+        system_prompt = """당신은 ABSA(Aspect-Based Sentiment Analysis) 검수 전문가입니다.
+반드시 JSON 형식으로만 응답하세요.
+
+[규칙]
+1. 기존 라벨을 기준으로 오류만 판단하세요
+2. 새로 라벨링하지 마세요
+3. 확실한 오류만 수정하세요
+
+[Aspect 목록]
+배송/포장, 품질/불량, 가격/가성비, 사용감/성능, 사이즈/호환, 디자인, 재질/냄새, CS/응대, 재구매
+
+[Sentiment]
+positive, neutral, negative
+
+[출력 형식 - JSON]
+{
+  "judgment": "ok" | "fix" | "uncertain",
+  "issues": ["issue_type1", ...],
+  "fixed_label": {...},
+  "confidence": 0.0~1.0,
+  "reason": "판단 근거"
+}
+
+judgment가 "ok"면 issues와 fixed_label은 빈 배열/객체로.
+judgment가 "fix"면 issues와 fixed_label 필수.
+judgment가 "uncertain"면 issues에 "ambiguous" 포함."""
+
+        user_prompt = f"""
+[원문]
+{text}
+
+[평점]
+{rating}점/5점
+
+[기존 라벨]
+- sentiment: {original_label.get('sentiment', 'N/A')}
+- sentiment_score: {original_label.get('sentiment_score', 'N/A')}
+- aspect_labels: {original_label.get('aspect_labels', [])}
+- evidence: {original_label.get('evidence', 'N/A')}
+
+[검수 이유]
+{', '.join(risk_reasons)}
+
+위 라벨이 올바른지 검수해주세요."""
+
+        # Check cache
+        cache_content = f"judge|{text}|{rating}|{json.dumps(original_label, ensure_ascii=False)}|{model}"
+        cache_key = hashlib.md5(cache_content.encode('utf-8')).hexdigest()
+        if use_cache and cache_key in self.cache:
+            return self.cache[cache_key]
+
+        # Estimate tokens
+        estimated_tokens = (len(system_prompt) + len(user_prompt)) // 2 + 300
+
+        # Rate limiting
+        self._wait_for_rate_limit(estimated_tokens)
+
+        # Call API with retry logic
+        max_retries = 3
+        backoff = 2.0
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=800,
+                    response_format={"type": "json_object"}
+                )
+
+                # Parse response
+                result_text = response.choices[0].message.content
+                result = json.loads(result_text)
+
+                # Validate result
+                result = self._validate_judge_result(result)
+
+                # Calculate cost
+                tokens_input = response.usage.prompt_tokens
+                tokens_output = response.usage.completion_tokens
+                cost = (
+                    tokens_input * self.PRICING[model]["input"] / 1000 +
+                    tokens_output * self.PRICING[model]["output"] / 1000
+                )
+
+                # Add metadata
+                result["model"] = model
+                result["tokens"] = tokens_input + tokens_output
+                result["cost"] = cost
+
+                # Update stats
+                self.total_cost += cost
+                self.total_requests += 1
+
+                # Cache result
+                if use_cache:
+                    self.cache[cache_key] = result
+                    if self.total_requests % 10 == 0:
+                        self._save_cache()
+
+                return result
+
+            except RateLimitError as e:
+                if attempt < max_retries - 1:
+                    sleep_time = backoff ** (attempt + 1)
+                    print(f"Rate limit hit, retrying in {sleep_time}s...")
+                    time.sleep(sleep_time)
+                else:
+                    raise
+            except (APIError, APIConnectionError, json.JSONDecodeError) as e:
+                if attempt < max_retries - 1:
+                    sleep_time = backoff ** attempt
+                    print(f"API error ({e}), retrying in {sleep_time}s...")
+                    time.sleep(sleep_time)
+                else:
+                    raise
+
+        raise RuntimeError("Max retries exceeded")
+
+    def _validate_judge_result(self, result: Dict) -> Dict:
+        """Validate and fix judge result"""
+        # Check judgment field
+        if result.get("judgment") not in ["ok", "fix", "uncertain"]:
+            result["judgment"] = "uncertain"
+
+        # Ensure issues is a list
+        if not isinstance(result.get("issues"), list):
+            result["issues"] = []
+
+        # Ensure fixed_label is a dict
+        if not isinstance(result.get("fixed_label"), dict):
+            result["fixed_label"] = {}
+
+        # Ensure confidence is a float
+        try:
+            result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
+        except (ValueError, TypeError):
+            result["confidence"] = 0.5
+
+        # Ensure reason is a string
+        if not isinstance(result.get("reason"), str):
+            result["reason"] = ""
+
+        # Validate fixed_label if judgment is "fix"
+        if result["judgment"] == "fix" and result["fixed_label"]:
+            # Validate sentiment
+            if result["fixed_label"].get("sentiment") not in ["positive", "neutral", "negative"]:
+                if "sentiment" in result["fixed_label"]:
+                    del result["fixed_label"]["sentiment"]
+
+            # Validate aspect_labels
+            if "aspect_labels" in result["fixed_label"]:
+                valid_aspects = [a for a in result["fixed_label"]["aspect_labels"]
+                               if a in self.ASPECT_LABELS]
+                result["fixed_label"]["aspect_labels"] = valid_aspects
+
+        return result

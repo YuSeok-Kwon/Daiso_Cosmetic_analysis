@@ -128,3 +128,57 @@ OUTPUT_COLUMNS = [
     "order_id",
     "is_ambiguous"
 ]
+
+# Validation configuration
+VALIDATION_CONFIG = {
+    # Valid values
+    "valid_sentiments": ["positive", "neutral", "negative"],
+    "valid_aspects": ASPECT_LABELS,  # 9개 aspect 사용
+    "score_range": (-1.0, 1.0),
+
+    # Negative keywords for risk detection
+    "negative_keywords": [
+        '별로', '최악', '다시는', '환불', '불친절', '늦', '안좋', '안 좋',
+        '실망', '후회', '짜증', '불량', '파손', '망', '싫', '아쉽', '거짓',
+        '속았', '사기', '엉망', '쓰레기', '버림', '못씀', '안됨', '고장'
+    ],
+
+    # Contrast markers (대비 접속사)
+    "contrast_markers": ['지만', '는데', '으나', '나', '만', '그러나', '하지만', '근데'],
+
+    # Risk thresholds
+    "long_text_threshold": 50,      # 50자 이상이면 long text
+    "low_confidence_range": (0.3, 0.5),  # 낮은 신뢰도 범위
+
+    # Rating-sentiment mapping (for mismatch detection)
+    "rating_sentiment_map": {
+        1: "negative", 2: "negative",
+        3: "neutral",
+        4: "positive", 5: "positive"
+    },
+
+    # Judge model configuration
+    "judge_model": "gpt-4.1-mini",
+    "judge_temperature": 0.2,
+    "judge_max_tokens": 800,
+}
+
+# Validation data paths
+VALIDATION_DATA_DIR = DATA_ROOT / "validation"
+VALIDATION_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Validation output files
+RULE_VALIDATION_OUTPUT = VALIDATION_DATA_DIR / "rule_validation.jsonl"
+RISK_CASES_OUTPUT = VALIDATION_DATA_DIR / "risk_cases.jsonl"
+JUDGE_RESULTS_OUTPUT = VALIDATION_DATA_DIR / "judge_results.jsonl"
+VALIDATED_LABELS_OUTPUT = RAW_DATA_DIR / "chatgpt_labels_20k_validated.jsonl"
+
+# Issue types for judge model
+ISSUE_TYPES = [
+    "wrong_sentiment",      # 감정 오분류
+    "wrong_aspect",         # aspect 오분류
+    "missing_aspect",       # aspect 누락
+    "extra_aspect",         # 불필요한 aspect
+    "wrong_evidence",       # 근거 불일치
+    "ambiguous",            # 판단 불가
+]
