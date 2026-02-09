@@ -20,12 +20,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from config import DAISO_BEAUTY_CATEGORIES
-from modules.ocr_utils_split import extract_text_from_image_url_split
+from modules.ocr_utils_split import extract_text_from_image_url_split, extract_text_bottom_up_3920
 from modules.halal_vegan_checker import check_halal_vegan_status
 from modules.ingredient_parser import (
     normalize_ingredient_name,
     is_valid_ingredient,
     extract_from_text,
+    extract_product_section,
     INGREDIENT_KEYWORDS
 )
 from utils import setup_logger, get_date_string
@@ -53,18 +54,66 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
     HEADER_KEYWORDS = ['전성분', '성분:', '모든성분', '화장품법', 'INGREDIENTS', 'Ingredients', '성분 :', '[성분명]', '성분명', '[전성분]']
     alt_has_header = False  # ALT에 "전성분" 같은 헤더가 있는지
 
+    # 대표 성분명 (헤더 없이도 성분 섹션 감지용 - OCR과 동일)
+    COMMON_INGREDIENTS_ALT = [
+        '정제수', '글리세린', '부틸렌글라이콜', '프로판다이올', '나이아신아마이드',
+        '히알루론산', '판테놀', '알란토인', '토코페롤', '카보머', '페녹시에탄올',
+        '향료', '시트릭애씨드', '다이메티콘', '스쿠알란', '세틸알코올',
+        '글리세레스', '헥산다이올', '소듐하이알루로네이트', '알지닌', '세린',
+    ]
+
     try:
-        pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img")
+        # picture 태그 안의 img와 직접 img 태그 모두 찾기
+        pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img, div.editor-content > img")
 
         for idx, img in enumerate(pictures):
             alt_text = img.get_attribute("alt") or ""
 
+            # 긴 ALT 텍스트 처리 (100자 이상)
+            if alt_text and len(alt_text) > 100:
+                # 줄바꿈 제거 후 키워드 검색
+                alt_text_flat = alt_text.replace('\n', ' ').replace('  ', ' ')
+                logger.debug(f"ALT_{idx} 길이: {len(alt_text)}, 첫 100자: {alt_text_flat[:100]}...")
+
+                # 헤더 키워드 확인
+                has_header = any(kw in alt_text_flat for kw in HEADER_KEYWORDS)
+                if has_header:
+                    alt_has_header = True
+                    logger.debug(f"ALT_{idx}에서 헤더 키워드 발견")
+
+                # 대표 성분명 개수 확인 (헤더 없어도 성분 섹션 감지)
+                common_ing_count = sum(1 for ing in COMMON_INGREDIENTS_ALT if ing in alt_text_flat)
+
+                # 헤더가 있거나, 대표 성분명이 3개 이상이면 성분 섹션으로 판단
+                if has_header or any(kw in alt_text_flat for kw in INGREDIENT_KEYWORDS) or common_ing_count >= 3:
+                    if common_ing_count >= 3 and not has_header:
+                        logger.info(f"ALT_{idx}에서 대표 성분명 {common_ing_count}개 감지 (헤더 없음) → 성분 추출 시도")
+
+                    # 멀티 제품/옵션 텍스트에서 해당 제품 섹션만 추출
+                    alt_text_section = extract_product_section(alt_text_flat, product_name)
+                    alt_ingredients = extract_from_text(alt_text_section, source=f"ALT_{idx}")
+
+                    for ing in alt_ingredients:
+                        name = normalize_ingredient_name(ing['ingredient'])
+                        is_valid, conf, reason = is_valid_ingredient(name)
+
+                        if is_valid and conf >= 0.5:
+                            if name not in all_ingredients:
+                                all_ingredients[name] = {'confidence': conf, 'sources': [ing['source']], 'reason': reason}
+                            else:
+                                all_ingredients[name]['sources'].append(ing['source'])
+                                all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.1)
+                continue
+
+            # 짧은 ALT 텍스트 처리 (100자 이하)
             # 헤더 키워드 확인 (전성분, 성분: 등)
             if any(kw in alt_text for kw in HEADER_KEYWORDS):
                 alt_has_header = True
 
             if any(kw in alt_text for kw in INGREDIENT_KEYWORDS):
-                alt_ingredients = extract_from_text(alt_text, source=f"ALT_{idx}")
+                # 멀티 제품/옵션 텍스트에서 해당 제품 섹션만 추출
+                alt_text_section = extract_product_section(alt_text, product_name)
+                alt_ingredients = extract_from_text(alt_text_section, source=f"ALT_{idx}")
 
                 for ing in alt_ingredients:
                     name = normalize_ingredient_name(ing['ingredient'])
@@ -85,53 +134,30 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
         alt_count = 0
 
     # 소스 2: OCR
-    # - ALT에 헤더 키워드가 있고 성분 6개 이상 → 신뢰, OCR 스킵
-    # - ALT에 헤더 있지만 성분 5개 이하 → OCR 보완 모드 (불완전한 ALT)
-    # - ALT에 헤더 없는데 성분 10개 이상 → OCR 교차 검증 (검증 모드)
-    # - ALT에 성분 10개 미만 → OCR로 추가 추출 (보완 모드)
-    if alt_has_header and alt_count >= 6:
-        run_ocr = False
-        logger.info(f"ALT에 '전성분' 헤더 + {alt_count}개 성분 → OCR 스킵 (ALT 신뢰)")
-        ocr_mode = None
-    elif alt_has_header and alt_count < 6:
-        run_ocr = True
-        ocr_mode = "보완"
-        logger.info(f"ALT에 '전성분' 헤더 있지만 성분 {alt_count}개 (5개 이하) → OCR 보완 필요")
-    elif alt_count >= 10:
-        run_ocr = True
+    # - 항상 OCR 실행 (ALT 여부와 무관하게 전체 제품 OCR 진행)
+    # - ALT에서 성분 발견된 경우: 검증 모드
+    # - ALT에서 성분 미발견: 보완 모드
+    run_ocr = True  # 항상 OCR 실행
+    if alt_count >= 6:
         ocr_mode = "검증"
-        logger.info(f"ALT에 헤더 없지만 성분 {alt_count}개 발견 → OCR 교차 검증")
+        logger.info(f"ALT에서 성분 {alt_count}개 발견 → OCR 교차 검증")
     else:
-        run_ocr = True
         ocr_mode = "보완"
+        logger.info(f"ALT 성분 {alt_count}개 → OCR 보완 모드")
 
     if run_ocr:
         try:
             # ALT에서 추출된 성분 목록 (검증용)
             alt_ingredients_set = set(all_ingredients.keys()) if ocr_mode == "검증" else set()
 
-            pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img")
+            # picture 태그 안의 img와 직접 img 태그 모두 찾기
+            pictures = driver.find_elements(By.CSS_SELECTOR, "div.editor-content picture img, div.editor-content > img")
             ocr_only_count = 0
             verified_count = 0
 
             # 이미지 유형 판별: 긴 이미지 1장 vs 작은 이미지 여러장
-            # picture 태그가 3개 이상이면 멀티 이미지로 판단
-            is_multi_image = len(pictures) >= 3
-
-            if is_multi_image:
-                # 멀티 이미지 케이스: 마지막 2개 이미지에서 전성분 찾기
-                logger.info(f"멀티 이미지 감지: {len(pictures)}개 이미지 → 마지막 2개에서 전성분 탐색")
-                target_images = list(pictures[-2:])
-                target_images.reverse()  # 마지막 이미지 먼저
-                num_sections = 1  # 작은 이미지는 분할 불필요
-            else:
-                # 싱글 이미지 케이스 (긴 이미지): 기존 로직 유지
-                logger.info(f"싱글/대형 이미지 감지: {len(pictures)}개 이미지 → 분할 OCR 적용")
-                target_images = list(pictures[-3:])
-                target_images.reverse()
-                num_sections = 5  # 긴 이미지는 5개 섹션으로 분할
-
-            found_ingredients_in_ocr = False
+            # picture 태그가 2개 이상이면 멀티 이미지로 판단
+            is_multi_image = len(pictures) >= 2
 
             # 대표 성분명 키워드 (헤더 없이 성분명만 있는 경우 감지용)
             COMMON_INGREDIENTS = [
@@ -140,61 +166,99 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
                 '향료', '시트릭애씨드', '다이메티콘', '스쿠알란', '세틸알코올',
             ]
 
-            for idx, img in enumerate(target_images):
-                src = img.get_attribute("src")
+            found_ingredients_in_ocr = False
 
-                if src:
-                    logger.info(f"OCR 분석 중 ({ocr_mode} 모드): 이미지 {idx + 1}/{len(target_images)}")
+            if is_multi_image:
+                # 멀티 이미지 케이스: 마지막 2개 이미지에서 전성분 찾기 (기존 로직 유지)
+                logger.info(f"멀티 이미지 감지: {len(pictures)}개 이미지 → 마지막 2개에서 전성분 탐색")
+                target_images = list(pictures[-2:])
+                target_images.reverse()  # 마지막 이미지 먼저
+                num_sections = 1  # 작은 이미지는 분할 불필요
 
-                    sections = extract_text_from_image_url_split(src, num_sections=num_sections)
+                for idx, img in enumerate(target_images):
+                    src = img.get_attribute("src")
 
-                    # 전체 텍스트에서 성분 키워드 존재 여부 확인
-                    all_section_text = ' '.join([s.get('text', '') for s in sections or []])
+                    if src:
+                        logger.info(f"OCR 분석 중 ({ocr_mode} 모드): 이미지 {idx + 1}/{len(target_images)}")
+                        sections = extract_text_from_image_url_split(src, num_sections=num_sections)
 
-                    # 헤더 키워드 또는 대표 성분명 3개 이상 포함 시 성분 섹션으로 판단
-                    has_header = any(kw in all_section_text for kw in INGREDIENT_KEYWORDS)
-                    common_ing_count = sum(1 for ing in COMMON_INGREDIENTS if ing in all_section_text)
-                    has_ingredient_section = has_header or common_ing_count >= 3
+                        # 전체 텍스트에서 성분 키워드 존재 여부 확인
+                        all_section_text = ' '.join([s.get('text', '') for s in sections or []])
 
-                    if common_ing_count >= 3 and not has_header:
-                        logger.info(f"성분명 {common_ing_count}개 감지 (헤더 없음) → 성분 섹션으로 판단")
+                        # 헤더 키워드 또는 대표 성분명 3개 이상 포함 시 성분 섹션으로 판단
+                        has_header = any(kw in all_section_text for kw in INGREDIENT_KEYWORDS)
+                        common_ing_count = sum(1 for ing in COMMON_INGREDIENTS if ing in all_section_text)
+                        has_ingredient_section = has_header or common_ing_count >= 3
 
-                    if has_ingredient_section:
-                        logger.info(f"이미지 {idx + 1}에서 전성분 키워드 발견!")
-                        found_ingredients_in_ocr = True
+                        if common_ing_count >= 3 and not has_header:
+                            logger.info(f"성분명 {common_ing_count}개 감지 (헤더 없음) → 성분 섹션으로 판단")
 
-                        # 키워드가 있는 이미지면 모든 섹션에서 성분 추출 시도
-                        for section_idx, section in enumerate(sections or []):
-                            text = section.get('text', '')
+                        if has_ingredient_section:
+                            logger.info(f"이미지 {idx + 1}에서 전성분 키워드 발견!")
+                            found_ingredients_in_ocr = True
 
-                            # 각 섹션의 텍스트에서 성분 추출
-                            ocr_ingredients = extract_from_text(text, source=f"OCR_{idx}_{section_idx}")
+                            for section_idx, section in enumerate(sections or []):
+                                text = section.get('text', '')
+                                text_section = extract_product_section(text, product_name)
+                                ocr_ingredients = extract_from_text(text_section, source=f"OCR_{idx}_{section_idx}", force_mode=True)
 
-                            for ing in ocr_ingredients:
-                                name = normalize_ingredient_name(ing['ingredient'])
-                                is_valid, conf, reason = is_valid_ingredient(name)
+                                for ing in ocr_ingredients:
+                                    name = normalize_ingredient_name(ing['ingredient'])
+                                    is_valid, conf, reason = is_valid_ingredient(name)
+                                    conf *= 0.9
 
-                                # OCR은 오류 가능성이 있으므로 신뢰도 페널티
-                                conf *= 0.9
-
-                                if is_valid and conf >= 0.5:
-                                    if name not in all_ingredients:
-                                        # OCR에서만 발견된 새로운 성분
-                                        all_ingredients[name] = {'confidence': conf, 'sources': [ing['source']], 'reason': reason}
-                                        ocr_only_count += 1
-                                    else:
-                                        # ALT와 OCR 모두에서 발견 → 교차 검증 성공, 신뢰도 대폭 상승
-                                        all_ingredients[name]['sources'].append(ing['source'])
-                                        if ocr_mode == "검증":
-                                            all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.2)
-                                            verified_count += 1
+                                    if is_valid and conf >= 0.5:
+                                        if name not in all_ingredients:
+                                            all_ingredients[name] = {'confidence': conf, 'sources': [ing['source']], 'reason': reason}
+                                            ocr_only_count += 1
                                         else:
-                                            all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.05)
+                                            all_ingredients[name]['sources'].append(ing['source'])
+                                            all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.15)
+                                            verified_count += 1
 
-                        # 멀티 이미지에서 전성분 찾으면 더 이상 탐색 불필요
-                        if is_multi_image and ocr_only_count > 0:
-                            logger.info(f"멀티 이미지: 이미지 {idx + 1}에서 {ocr_only_count}개 성분 추출 완료, 탐색 종료")
-                            break
+                            break  # 성분 발견하면 더 이상 이미지 탐색 안 함
+
+            else:
+                # 싱글 이미지 케이스 (긴 이미지): Bottom-Up 3920px OCR
+                logger.info(f"싱글/대형 이미지 감지: {len(pictures)}개 이미지 → Bottom-Up 3920px OCR 적용")
+
+                # 마지막 이미지 사용 (주로 긴 이미지가 하나)
+                last_img = pictures[-1] if pictures else None
+                if last_img:
+                    src = last_img.get_attribute("src")
+                    if src:
+                        logger.info(f"OCR 분석 중 ({ocr_mode} 모드): Bottom-Up 3920px")
+                        sections = extract_text_bottom_up_3920(src)
+
+                        # 전체 텍스트에서 성분 키워드 존재 여부 확인
+                        all_section_text = ' '.join([s.get('text', '') for s in sections or []])
+
+                        has_header = any(kw in all_section_text for kw in INGREDIENT_KEYWORDS)
+                        common_ing_count = sum(1 for ing in COMMON_INGREDIENTS if ing in all_section_text)
+                        has_ingredient_section = has_header or common_ing_count >= 3
+
+                        if has_ingredient_section:
+                            logger.info(f"Bottom-Up OCR에서 전성분 키워드 발견!")
+                            found_ingredients_in_ocr = True
+
+                            for section_idx, section in enumerate(sections or []):
+                                text = section.get('text', '')
+                                text_section = extract_product_section(text, product_name)
+                                ocr_ingredients = extract_from_text(text_section, source=f"OCR_BU_{section_idx}", force_mode=True)
+
+                                for ing in ocr_ingredients:
+                                    name = normalize_ingredient_name(ing['ingredient'])
+                                    is_valid, conf, reason = is_valid_ingredient(name)
+                                    conf *= 0.9
+
+                                    if is_valid and conf >= 0.5:
+                                        if name not in all_ingredients:
+                                            all_ingredients[name] = {'confidence': conf, 'sources': [ing['source']], 'reason': reason}
+                                            ocr_only_count += 1
+                                        else:
+                                            all_ingredients[name]['sources'].append(ing['source'])
+                                            all_ingredients[name]['confidence'] = min(1.0, all_ingredients[name]['confidence'] + 0.15)
+                                            verified_count += 1
 
             if ocr_mode == "검증":
                 logger.info(f"OCR 교차 검증: {verified_count}개 성분 확인, OCR에서만 발견: {ocr_only_count}개")
@@ -819,13 +883,30 @@ def main():
         # CSV 저장 - 하나의 파일로 통합
         date_str = get_date_string()
 
+        # 카테고리 기반 파일명 생성
+        # categories: [(middle, middle_code, small_code, small_name), ...]
+        if categories:
+            # 중분류 추출 (중복 제거)
+            middle_names = list(dict.fromkeys([cat[0] for cat in categories]))
+            # 소분류 추출 (중복 제거)
+            small_names = list(dict.fromkeys([cat[3] for cat in categories]))
+
+            # 파일명용 문자열 생성 (특수문자 제거)
+            middle_str = '_'.join(middle_names)
+            small_str = '_'.join(small_names)
+
+            # 파일명에 사용할 수 없는 문자 제거/치환
+            category_suffix = f"{middle_str}_{small_str}".replace('/', '_').replace(':', '_').replace(' ', '')
+        else:
+            category_suffix = "all"
+
         # data 디렉토리 생성
         os.makedirs('data', exist_ok=True)
 
         # 제품 정보 저장 (하나의 파일)
         if all_products and not minimal_mode:
             df_products = pd.DataFrame(all_products)
-            product_file = f'data/products_{date_str}.csv'
+            product_file = f'data/products_{category_suffix}_{date_str}.csv'
             df_products.to_csv(product_file, index=False, encoding='utf-8-sig')
             logger.info(f"제품 정보 저장 완료: {product_file} ({len(df_products)}개)")
             print(f"\n제품 정보: {product_file} ({len(df_products)}개)")
@@ -833,7 +914,7 @@ def main():
         # 리뷰 저장 (하나의 파일)
         if all_reviews:
             df_reviews = pd.DataFrame(all_reviews)
-            review_file = f'data/reviews_{date_str}.csv'
+            review_file = f'data/reviews_{category_suffix}_{date_str}.csv'
             df_reviews.to_csv(review_file, index=False, encoding='utf-8-sig')
             logger.info(f"리뷰 저장 완료: {review_file} ({len(df_reviews)}개)")
             print(f"리뷰: {review_file} ({len(df_reviews)}개)")
@@ -841,7 +922,7 @@ def main():
         # 성분 저장 (하나의 파일)
         if all_ingredients:
             df_ingredients = pd.DataFrame(all_ingredients)
-            ingredient_file = f'data/ingredients_{date_str}.csv'
+            ingredient_file = f'data/ingredients_{category_suffix}_{date_str}.csv'
             df_ingredients.to_csv(ingredient_file, index=False, encoding='utf-8-sig')
             logger.info(f"성분 저장 완료: {ingredient_file} ({len(df_ingredients)}개)")
             print(f"성분: {ingredient_file} ({len(df_ingredients)}개)")

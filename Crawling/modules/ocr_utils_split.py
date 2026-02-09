@@ -95,6 +95,112 @@ def split_image_vertically(image, num_sections=3):
     return sections
 
 
+def extract_text_bottom_up_3920(url, use_clova=True):
+    """
+    하단에서 위로 3920px씩 OCR (긴 단일 이미지용)
+
+    - 1차: 하단 1960px OCR → 키워드 찾으면 반환
+    - 2차: 그 위 1960px OCR → 키워드 찾으면 반환 (총 3920px)
+    - 3차: 그 위 1960px OCR → 키워드 찾으면 반환
+    - 4차: 그 위 1960px OCR → 키워드 찾으면 반환 (총 7840px)
+
+    Args:
+        url: 이미지 URL
+        use_clova: Naver Clova OCR 사용 여부
+
+    Returns:
+        list: OCR 결과 리스트 [{'section': 1, 'text': '...', 'method': 'clova_bottom_up'}, ...]
+    """
+    CLOVA_LIMIT = 1960
+    MAX_CROPS = 4  # 최대 4번 크롭 (7840px)
+
+    # 성분 키워드 (전성분 헤더)
+    HEADER_KEYWORDS = ['전성분', '성분:', '모든성분', '화장품법', 'INGREDIENTS', 'ingredients', '성분명', '[전성분]']
+    # 대표 성분명 (헤더 없이도 감지)
+    COMMON_INGREDIENTS = [
+        '정제수', '글리세린', '부틸렌글라이콜', '프로판다이올', '나이아신아마이드',
+        '히알루론산', '판테놀', '알란토인', '토코페롤', '카보머', '페녹시에탄올',
+        '향료', '시트릭애씨드', '다이메티콘', '스쿠알란', '세틸알코올',
+    ]
+
+    try:
+        # 이미지 다운로드
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        original_image = Image.open(BytesIO(response.content))
+        height = original_image.size[1]
+        width = original_image.size[0]
+        logger.info(f"[Bottom-Up OCR] 이미지 다운로드: {width}x{height}")
+
+        all_results = []
+
+        for crop_idx in range(MAX_CROPS):
+            # 하단에서 위로 크롭 위치 계산
+            bottom = height - (crop_idx * CLOVA_LIMIT)
+            top = max(0, bottom - CLOVA_LIMIT)
+
+            if bottom <= 0:
+                logger.info(f"[Bottom-Up OCR] 이미지 상단 도달, 크롭 중단")
+                break
+
+            # 크롭
+            cropped = original_image.crop((0, top, width, bottom))
+            crop_height = bottom - top
+            logger.info(f"[Bottom-Up OCR] {crop_idx+1}차 크롭: y {top}-{bottom} ({crop_height}px)")
+
+            # Clova OCR 호출
+            clova_text = None
+            if use_clova:
+                try:
+                    from .clova_ocr import get_clova_client
+                    clova_client = get_clova_client()
+
+                    if clova_client.is_available():
+                        img_byte_arr = BytesIO()
+                        cropped.save(img_byte_arr, format='PNG')
+                        img_bytes = img_byte_arr.getvalue()
+                        clova_text = clova_client.extract_text_from_bytes(img_bytes, image_format='png')
+                except Exception as e:
+                    logger.warning(f"[Bottom-Up OCR] Clova 실패: {str(e)}")
+
+            if not clova_text:
+                # EasyOCR 폴백
+                cropped = preprocess_image_for_ocr(cropped)
+                reader = get_ocr_reader()
+                ocr_result = reader.readtext(np.array(cropped), detail=0, paragraph=True)
+                clova_text = ' '.join(ocr_result) if ocr_result else ''
+
+            # 결과 저장
+            all_results.append({
+                'section': crop_idx + 1,
+                'text': clova_text or '',
+                'char_count': len(clova_text) if clova_text else 0,
+                'height_range': (top, bottom),
+                'method': 'clova_bottom_up'
+            })
+
+            # 키워드 검증
+            if clova_text:
+                text_flat = clova_text.replace('\n', ' ').replace('  ', ' ')
+                text_nospace = clova_text.replace('\n', '').replace(' ', '')
+
+                has_header = any(kw.replace(' ', '') in text_nospace.lower() for kw in HEADER_KEYWORDS)
+                ingredient_count = sum(1 for ing in COMMON_INGREDIENTS if ing in text_flat)
+
+                if has_header or ingredient_count >= 3:
+                    logger.info(f"[Bottom-Up OCR] {crop_idx+1}차에서 성분 키워드 발견! (헤더: {has_header}, 성분: {ingredient_count}개)")
+                    return all_results
+                else:
+                    logger.info(f"[Bottom-Up OCR] {crop_idx+1}차: 키워드 미발견 (헤더: {has_header}, 성분: {ingredient_count}개) → 위 영역 탐색")
+
+        logger.info(f"[Bottom-Up OCR] 총 {len(all_results)}개 영역 OCR 완료")
+        return all_results
+
+    except Exception as e:
+        logger.error(f"[Bottom-Up OCR] 실패: {str(e)}")
+        return []
+
+
 def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_crop=True):
     """
     이미지 URL에서 텍스트 추출 (분할 방식 + Clova OCR + 자동 크롭)
@@ -136,18 +242,39 @@ def extract_text_from_image_url_split(url, num_sections=3, use_clova=True, auto_
             except Exception as e:
                 logger.warning(f"성분표 영역 크롭 실패 (원본 사용): {str(e)}")
 
-        # 1-1. 긴 이미지 하단 영역 추출 (성분표는 무조건 맨 하단에 위치)
-        # Clova OCR 장축 제한 1960px 초과 시 무조건 하단 크롭 (ingredient_detector 결과 무시)
-        exceeds_clova_limit = original_image.size[1] > 1960
+        # 1-1. Clova OCR 장축 제한 1960px 처리
+        # 성분표 영역이 이미 크롭되었으면 그 영역 기준으로 처리
+        exceeds_clova_limit = image.size[1] > 1960
 
         if exceeds_clova_limit:
-            # Clova OCR 장축 제한 1960px에 맞춤
-            height = original_image.size[1]
-            bottom_height = min(int(height * 0.15), 1960)  # 하단 15% 또는 최대 1960px
-            bottom_start = height - bottom_height
-            image = original_image.crop((0, bottom_start, original_image.size[0], height))
-            crop_success = False  # 하단 크롭이므로 crop_success 초기화
-            logger.info(f"Clova 제한 초과 → 하단 크롭: {original_image.size} → {image.size} (y: {bottom_start}-{height})")
+            # 이미 성분표 영역이 크롭되었으면 (crop_success=True), 그 영역 내에서 추가 크롭
+            # 성분표 크롭이 실패했으면, 원본에서 하단 크롭
+            if crop_success:
+                # 성분표 영역 내에서 Clova 제한에 맞게 크롭
+                # 매우 긴 이미지(>5000px)의 하단 스캔에서 발견된 경우:
+                #   - '전성분' 키워드는 3500px 영역의 하단에 있을 가능성 높음
+                #   - 따라서 하단 1960px를 크롭
+                # 일반 이미지: 상단 우선 (기존 로직)
+                height = image.size[1]
+
+                if original_image.size[1] > 5000:
+                    # 매우 긴 이미지 → 하단 크롭 (성분표가 하단 스캔에서 발견됨)
+                    bottom_height = min(1960, height)
+                    bottom_start = height - bottom_height
+                    image = image.crop((0, bottom_start, image.size[0], height))
+                    logger.info(f"성분표 영역 내 Clova 크롭 (하단): → {image.size} (y: {bottom_start}-{height})")
+                else:
+                    # 일반 이미지 → 상단 크롭
+                    top_height = min(1960, height)
+                    image = image.crop((0, 0, image.size[0], top_height))
+                    logger.info(f"성분표 영역 내 Clova 크롭 (상단): → {image.size} (y: 0-{top_height})")
+            else:
+                # 성분표 감지 실패 시 원본에서 하단 크롭
+                height = original_image.size[1]
+                bottom_height = min(int(height * 0.15), 1960)  # 하단 15% 또는 최대 1960px
+                bottom_start = height - bottom_height
+                image = original_image.crop((0, bottom_start, original_image.size[0], height))
+                logger.info(f"Clova 제한 초과 → 하단 크롭: {original_image.size} → {image.size} (y: {bottom_start}-{height})")
 
         # 2. Clova OCR 시도
         clova_text = None

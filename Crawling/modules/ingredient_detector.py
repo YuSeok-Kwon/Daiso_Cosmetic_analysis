@@ -226,7 +226,20 @@ def detect_ingredient_region(image_array: np.ndarray,
                 # 키워드 체크
                 for keyword in keywords:
                     if keyword in text:
-                        logger.info(f"성분표 영역 발견! 키워드: '{keyword}' at ({x}, {y}, {w}, {h})")
+                        logger.info(f"성분표 키워드 발견: '{keyword}' at ({x}, {y}, {w}, {h})")
+
+                        # 영역이 너무 작으면 (키워드만 감지된 경우) 위아래로 확장
+                        if w * h < 50000:  # 약 200x250 이하면 확장
+                            image_height = image_array.shape[0]
+                            image_width = image_array.shape[1]
+                            # 키워드 위치 기준 위로 500px, 아래로 이미지 끝까지
+                            expand_up = min(500, y)  # 위로 최대 500px
+                            new_y = y - expand_up
+                            new_h = image_height - new_y
+                            expanded_region = (0, new_y, image_width, new_h)
+                            logger.info(f"영역 확장 (작은 영역): {region} -> {expanded_region}")
+                            return expanded_region
+
                         return region
 
             except Exception as e:

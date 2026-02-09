@@ -2,6 +2,10 @@
 성분명 파싱 및 유효성 검증 모듈
 """
 import re
+import logging
+
+# 로거 설정
+logger = logging.getLogger(__name__)
 
 # OCR 오인식 패턴 및 수정 맵 (실제 크롤링 데이터 기반)
 OCR_CORRECTIONS = {
@@ -111,6 +115,23 @@ OCR_CORRECTIONS = {
     '메칠': '메틸',
     '부칠': '부틸',
 
+    # === ~올/~롤 OCR 오인식 (ㄹ → ㄹ+ㅡ, ㄹ → ㄷ 등) ===
+    '다이을': '다이올',  # 메틸프로판다이을 → 메틸프로판다이올
+    '글라이을': '글라이올',
+    '토코페돌': '토코페롤',
+    '레티돌': '레티놀',
+    '판테돌': '판테놀',
+    '멘토': '멘톨',
+    '에탄을': '에탄올',
+    '메탄을': '메탄올',
+    '프로판을': '프로판올',
+
+    # === OCR 글자 오인식 추가 ===
+    '둠둠': '소듐',  # 소듐 → 둠둠
+    '니이아신': '나이아신',  # 나이아신 → 니이아신
+    '소듐이크릴': '소듐아크릴',  # 아크릴 → 이크릴
+    '에스어이치': '에스에이치',  # 에스에이치 → 에스어이치
+
     # === 폴리소르베이트 변형 (숫자 오인식) ===
     '폴리소르베0655': '폴리소르베이트65',
     '폴리소르베이65': '폴리소르베이트65',
@@ -141,6 +162,85 @@ OCR_CORRECTIONS = {
     # === 정제수 변형 ===
     '정쩌수': '정제수',
     '정쪄수': '정제수',
+
+    # === "이" → "O"/"0" OCR 오인식 (영어 O/숫자 0으로 잘못 인식) ===
+    # 접미사 패턴: ~에이 → ~에O, ~네이트 → ~네0트/~네O트
+    '이디티에O': '이디티에이',  # 다이소듐이디티에이
+    '이디티에0': '이디티에이',
+    '루로네O트': '루로네이트',  # 하이알루로네이트
+    '루로네0트': '루로네이트',
+    '네O트': '네이트',  # 일반 ~네이트 접미사
+    '네0트': '네이트',
+    '레O트': '레이트',  # 스테아레이트 등
+    '레0트': '레이트',
+    '라O드': '라이드',  # 클로라이드 등
+    '라0드': '라이드',
+    '사O드': '사이드',  # 옥사이드 등
+    '사0드': '사이드',
+
+    # 접두사/중간 패턴: 아~ → O~/0~
+    'O세틸': '아세틸',  # 아세틸레이티드
+    '0세틸': '아세틸',
+    'O크릴': '아크릴',  # 아크릴레이트
+    '0크릴': '아크릴',
+    'O마이드': '아마이드',  # 나이아신아마이드
+    '0마이드': '아마이드',
+    'O민산': '아민산',  # 아미노산
+    '0민산': '아민산',
+
+    # 기타 자주 발생하는 O/0 오인식
+    '페녹시에탄O': '페녹시에탄올',  # 페녹시에탄올
+    '페녹시에탄0': '페녹시에탄올',
+    '글리세릴O': '글리세릴',  # 끝에 O가 붙는 경우 제거
+    '글리세릴0': '글리세릴',
+    '포스페0트': '포스페이트',  # 소듐아스코빌포스페이트
+    '포스페O트': '포스페이트',
+    '페0트': '페이트',  # 일반 ~페이트 접미사
+    '페O트': '페이트',
+
+    # === 폴리소르베이트 OCR 오인식 ===
+    '솔베0l트': '소르베이트',  # 폴리솔베0l트 → 폴리소르베이트
+    '솔베0|트': '소르베이트',
+    '솔베이트': '소르베이트',  # 솔베 → 소르베
+    '폴리솔베': '폴리소르베',
+
+    # === 스테아레이트 OCR 오인식 ===
+    '스터아레이트': '스테아레이트',  # 스터 → 스테
+    '스타아레이트': '스테아레이트',
+    '스태아레이트': '스테아레이트',
+
+    # === 라우레이트 OCR 오인식 ===
+    '리우레이트': '라우레이트',  # 리 → 라
+    '리우릭': '라우릭',
+
+    # === OCR 숫자-한글 오인식 (숫자가 한글 중간에 섞임) ===
+    # 1 → 이/ㅣ 오인식
+    '러1이트': '레이트',  # 타우러1이트 → 타우레이트
+    '러1에이트': '레이트',
+    '릴1이트': '릴레이트',
+    '타우러1': '타우레',
+    '글라0콜': '글라이콜',
+
+    # 0 → 이/아 오인식 (한글 중간)
+    '다0메틸': '다이메틸',
+    '다0메칠': '다이메틸',
+    '트라0아이소': '트라이아이소',
+    '트라0이소': '트라이아이소',
+    '폴리0크릴': '폴리아크릴',
+    '하이0루로닉': '하이알루로닉',
+    '하이일루로닉': '하이알루로닉',  # 이 → 알
+
+    # === 추가 OCR 오인식 ===
+    '소둠': '소듐',
+    '케프': '켈프',  # 호스테일케프 → 호스테일켈프
+    '이마이드': '아마이드',  # 옥틸아크릴이마이드 → 옥틸아크릴아마이드
+    '아이소스스테아': '아이소스테아',  # 중복 'ㅅ' 제거
+    '헥사노어이트': '헥사노에이트',  # 어 → 에
+
+    # === 성분 시작 키워드가 붙은 경우 ===
+    '전성분': '',  # 전성분변성알코올 → 변성알코올
+    '[전성분]': '',
+    '(전성분)': '',
 }
 
 # 화학 성분 패턴 (정규표현식) - 컴파일하여 성능 최적화
@@ -190,17 +290,31 @@ _NOISE_PATTERN_STRS = [
     # 주의사항 관련 단어 (동사형 어미)
     r'.*(할|된|한|있을|없을|나타날|피해서|자제할|보관할|상담할)$',
     r'.*(증상|가려움|부어오름|상처|이상).*',
+
+    # === 영문 노이즈 패턴 (제품 설명, 마케팅 문구) ===
+    r'^(POINT|STEP|TIP|NOTE|HOW|WHAT|WHY|KEY|BEST|NEW|SPECIAL)\d*$',
+    r'^(Book|Marine|Complex|Extra|Super|Care|Soluti|Solution|Recipe)$',
+    r'^(SUPER|EXTRA|PLUS|PRO|MAX|ULTRA)\d*$',
+    r'^(Before|After|Texture|Ingredient|Recommend)$',
+    r'^[A-Z]{2,6}\d*$',  # 순수 대문자 약어 (SPF50 제외, 위에서 처리)
 ]
 NOISE_PATTERNS = [re.compile(p) for p in _NOISE_PATTERN_STRS]
 
 # 성분 키워드 (실제 성분 리스트를 나타내는 키워드)
 INGREDIENT_KEYWORDS = [
-    "전성분", "화장품법", "모든 성분",
+    "전성분", "화장품법", "모든 성분", "모든성분",  # 공백 유무 둘 다
     "화장품법에 따라", "기재 표시", "기재·표시", "기재표시", "표시하여야", "표시 하여야",
     "하여야하는", "하여야 하는",
     "성분:", "[성분명]", "성분명", "[전성분]",
     "성분은", "주성분",  # 추가: "성분은 정제수..." 형식 대응
-    "INGREDIENTS", "Ingredients",
+    # 영문 키워드는 제외 - 영문 성분 리스트가 단어별로 분리되는 문제 발생
+    # "INGREDIENTS", "Ingredients",
+]
+
+# 영문 성분 섹션 시작 키워드 (여기서 성분 추출 중단)
+ENGLISH_INGREDIENT_KEYWORDS = [
+    "(Ingredient)", "[Ingredient]", "Ingredient)", "Ingredients:",
+    "(INCI)", "INCI:", "INCI Name",
 ]
 
 # 성분 섹션이 아닌 키워드
@@ -218,6 +332,18 @@ INGREDIENT_STOP_KEYWORDS = [
     '공정거래위원회', '소비자', '보상', '품질보증', '고시품목',
     '가려움', '부어오름', '상처', '직사광선', '어린이',
     '전문의', '상담', '피해서', '자제', '드립니다',
+    # 영문 성분 섹션 시작 (한글 성분 추출 후 중단)
+    '(Ingredient)', '[Ingredient]', 'Ingredient)', 'Ingredients:',
+    '(INCI)', 'INCI:', 'INCI Name',
+]
+
+# 메타데이터 키워드 (성분이 아닌 제품 정보)
+METADATA_KEYWORDS = [
+    '제조업자', '책임판매업자', '판매업자', '제조국', '원산지',
+    '코스비전', '아모레퍼시픽', '엘지생활건강', 'LG생활건강',
+    '대한민국', '한국', '중국', '일본', '프랑스', '미국',
+    '기능성화장품', '해당사항', '심사필', '여부',
+    '맞춤형', '수입원', '제조원', '유통기한', '개봉후',
 ]
 
 # 성분이 아닌 불용어
@@ -247,6 +373,13 @@ INGREDIENT_STOPWORDS = [
 
     # 브랜드/제품명
     'HYDRO', 'Schick', '쉐이브',
+
+    # === 영문 노이즈 (제품 설명, 마케팅 문구) ===
+    'Book', 'Marine', 'Complex', 'Extra', 'Super', 'Care', 'Soluti', 'Solution',
+    'Recipe', 'SUPER', 'EXTRA', 'PLUS', 'PRO', 'MAX', 'ULTRA', 'SUPER9',
+    'Before', 'After', 'Texture', 'Ingredient', 'Recommend', 'POINT',
+    'STEP', 'TIP', 'NOTE', 'HOW', 'WHAT', 'WHY', 'KEY', 'BEST', 'NEW', 'SPECIAL',
+    'VPROVE', 'MEDIPEEL', 'Oriox', 'LipBalm', 'Essense', 'Essence',
 
     # OCR 노이즈
     '드립니다', '드롤라이', '부츠쉬운', '에이프루악댕',
@@ -288,7 +421,7 @@ KNOWN_INGREDIENTS = {
 
     # 증점제
     '카보머', 'Carbomer', '잔탄검', '히알루론산나트륨',
-    '카라기난', '셀룰로오스검', '아크릴레이트코폴리머',
+    '카라기난', '셀룰로오스검', '아크릴레이트코폴리머', '아가',
 
     # 방부제
     '페녹시에탄올', 'Phenoxyethanol', '메틸파라벤', '에틸파라벤',
@@ -522,6 +655,58 @@ KNOWN_INGREDIENTS = {
     '토코페릴아세테이트', '아스코르빌테트라이소팔미테이트',
     '레티닐아세테이트', '피리독신에이치씨엘', '리보플라빈포스페이트',
     '티아민에이치씨엘', '시아노코발라민', '엽산', '판토텐산',
+
+    # 누락된 성분 추가 (OCR 크롤링 디버깅 기반)
+    '아르지닌', 'Arginine',  # 알지닌의 다른 표기
+    '하이드록시에틸우레아', 'HydroxyethylUrea',  # 보습제
+    '다이메틸설폰', 'DimethylSulfone', 'MSM',  # 기능성 성분
+    '소듐피씨에이', 'SodiumPCA',  # 보습제
+
+    # 1065041 디버깅 추가
+    '알진', 'Algin',  # 해조류 유래 점증제
+    '규조토', 'DiatomaceousEarth',  # 흡착제
+    '글루코오스', 'Glucose',  # 당류
+    '에리스리톨', 'Erythritol',  # 보습제
+    '비타민나무수', 'HippophaeRhamnoidesWater',  # 식물수
+    '하이드롤라이즈드콜라겐', 'HydrolyzedCollagen',  # 펩타이드
+    '엑사펩타이드-9', 'Hexapeptide9',  # 펩타이드
+    '황색산화철', 'YellowIronOxide', 'CI77492',  # 색소
+    '적색산화철', 'RedIronOxide', 'CI77491',
+    '흑색산화철', 'BlackIronOxide', 'CI77499',
+    '리놀레익애씨드', 'LinoleicAcid', '리놀레산',  # 지방산
+    '에틸헥실글리세린', 'Ethylhexylglycerin',  # 방부보조제
+    '폴리글리세릴-6카프릴레이트', 'Polyglyceryl6Caprylate',
+    '하이드록시프로필트라이모늄하이알루로네이트',  # 양이온 히알루론산
+    '소듐아세틸레이티드하이알루로네이트',  # 아세틸화 히알루론산
+    '폴리글리세릴-10스테아레이트',
+
+    # 기타 누락 성분 (1005698 등)
+    '베타-글루칸', 'BetaGlucan', '베타글루칸',  # 보습/면역 성분
+    '헥산디올', '헥산다이올',  # 1,2-헥산다이올 변형
+    '라반딘오일', 'LavandinOil',  # 향료
+    '연필향나무오일', 'JuniperusVirginianaOil',  # 향료
+
+    # 기타 누락 성분 (1061921 등)
+    '트레할로오스', 'Trehalose',  # 보습제/당류
+    '헥실신남알', 'HexylCinnamal',  # 향료 성분
+    '시트로넬롤', 'Citronellol',  # 향료 성분
+    '리날룰', 'Linalool',  # 향료 성분
+    '리모넨', 'Limonene',  # 향료 성분
+    '피리독신', 'Pyridoxine',  # 비타민 B6
+    '티아민에이치씨엘', 'ThiamineHCl',  # 비타민 B1
+    '폴릭애시드', 'FolicAcid',  # 엽산
+    '바이오틴', 'Biotin',  # 비타민 H
+    '사이아노코발아민', 'Cyanocobalamin',  # 비타민 B12
+
+    # 색소 (황색/적색/청색 번호)
+    '황색4호', 'Yellow4', 'CI19140',
+    '황색5호', 'Yellow5', 'CI15985',
+    '황색201호', '황색202호', '황색203호',
+    '적색2호', 'Red2', 'CI16185',
+    '적색40호', 'Red40', 'CI16035',
+    '적색102호', '적색201호', '적색202호',
+    '청색1호', 'Blue1', 'CI42090',
+    '청색2호', 'Blue2', 'CI73015',
 }
 
 
@@ -535,6 +720,49 @@ def normalize_ingredient_name(name: str) -> str:
     Returns:
         str: 정규화된 성분명
     """
+    # 0. 성분 앞에 붙은 키워드 제거 (전성분변성알코올 → 변성알코올, 주성분옥틸도데칸올 → 옥틸도데칸올)
+    prefix_keywords = [
+        '전성분', '[전성분]', '(전성분)', '성분:', '성분',
+        '주성분', '주성분:', '원료:', '원료',
+    ]
+    for kw in prefix_keywords:
+        if name.startswith(kw):
+            name = name[len(kw):]
+
+    # 0-1. 메타데이터 키워드가 성분 중간에 삽입된 경우 제거
+    # 예: "카프릴릭/카프릭트라이글리세라이드화장품법에따라기재표시하여야하는모든성분" 같은 경우
+    metadata_in_text = [
+        '화장품법에따라', '화장품법에 따라', '기재표시하여야하는', '기재·표시하여야하는',
+        '기재표시하여야 하는', '모든성분', '모든 성분', '하여야하는', '표시하여야',
+        '전성분', '성분명',
+    ]
+    for meta in metadata_in_text:
+        name = name.replace(meta, '')
+
+    # 0-2. 영문 노이즈 접두사 제거 (Complex블래더랙추출물 → 블래더랙추출물)
+    english_prefix_noise = [
+        'Complex', 'Marine', 'Extra', 'Super', 'SUPER', 'Recipe', 'Aqua',
+        'Special', 'Premium', 'Natural', 'Organic', 'Pure', 'Active',
+        'Advanced', 'Essential', 'Ultimate', 'Intensive', 'MARINE',
+    ]
+    for prefix in english_prefix_noise:
+        if name.startswith(prefix) and len(name) > len(prefix):
+            # 접두사 뒤에 한글이 오는 경우만 제거
+            rest = name[len(prefix):]
+            if rest and re.match(r'^[가-힣]', rest):
+                name = rest
+
+    # 0-3. 한글 노이즈 접두사 제거 (슈퍼9콤플렉스아보카도 → 아보카도)
+    korean_prefix_noise = [
+        '슈퍼9콤플렉스', '슈퍼콤플렉스', '마린콤플렉스', '에피샷', '아쿠아콤플렉스',
+        '프리미엄', '스페셜', '익스트라', '울트라', '인텐시브', '어드밴스드',
+    ]
+    for prefix in korean_prefix_noise:
+        if name.startswith(prefix) and len(name) > len(prefix):
+            rest = name[len(prefix):]
+            if rest and len(rest) >= 3:  # 남은 부분이 3자 이상이면 제거
+                name = rest
+
     # 1. 공백 제거
     name = re.sub(r'\s+', '', name)
 
@@ -549,22 +777,39 @@ def normalize_ingredient_name(name: str) -> str:
 
     # 3.5 앞부분 OCR 잡음 제거 (숫자, 특수문자로 시작하는 경우)
     # 예: "10|하이드록사이드" → "하이드록사이드", "=10|드로사이드" → "드로사이드"
-    name = re.sub(r'^[0-9=|!@#$%^&*<>]+', '', name)
+    # 주의: 1,2-헥산다이올 같은 화학 번호 접두사는 보존
+    if not re.match(r'^\d,\d-', name):  # 화학 번호 패턴이 아닌 경우만 제거
+        name = re.sub(r'^[0-9=|!@#$%^&*<>]+', '', name)
 
     # 4. 괄호 내용 제거 (Phase 1-2: 농도/함량 괄호 우선 처리)
     # 농도/함량 괄호 먼저 제거 (숫자+단위): 솔비톨(44.79%), 니코틴산아마이드(10ppm) 등
     # 지원 단위: %, ppb, ppm, mg/kg, µg/kg, mg/L, µg/L, g/L, w/w, w/v, v/v, mg, g, ml, L, kg
     concentration_pattern = r'\(\s*[\d,\.]+\s*(ppb|ppm|%|mg/kg|µg/kg|mg/L|µg/L|g/L|w/w|w/v|v/v|mg|g|ml|L|kg)?\s*\)'
     name = re.sub(concentration_pattern, '', name, flags=re.IGNORECASE)
-    # 나머지 괄호 제거
-    name = re.sub(r'\([^)]*\)', '', name)
+
+    # 화학명 괄호는 보존 (C6-14올레핀, CI77891 등)
+    def should_keep_paren(match):
+        content = match.group(1)
+        # CI + 숫자 패턴 (색소): CI77891, CI 77007 등
+        if re.match(r'^CI\s*\d+$', content, re.IGNORECASE):
+            return match.group(0)
+        # 탄소 사슬 패턴: C6-14, C12-15 등 (+ 한글/영문 가능)
+        if re.match(r'^C\d+[-]?\d*', content):
+            return match.group(0)
+        # 숫자-숫자 패턴: 6-14, 12-15 등
+        if re.match(r'^\d+[-]\d+', content):
+            return match.group(0)
+        # 그 외는 제거 (농도, 설명 등)
+        return ''
+
+    name = re.sub(r'\(([^)]*)\)', should_keep_paren, name)
     name = re.sub(r'\[[^\]]*\]', '', name)
 
     # 5. 기타 특수문자 제거
     name = re.sub(r'[*★☆※]', '', name)
 
-    # 6. 앞뒤 특수문자 제거
-    name = re.sub(r'^[^\w가-힣]+|[^\w가-힣]+$', '', name, flags=re.UNICODE)
+    # 6. 앞뒤 특수문자 제거 (괄호는 보존)
+    name = re.sub(r'^[^\w가-힣()]+|[^\w가-힣()]+$', '', name, flags=re.UNICODE)
 
     # 7. OCR 오타 수정
     name = name.replace('에칠', '에틸')
@@ -648,6 +893,22 @@ def _check_fast_rejection(text: str) -> tuple:
     if re.match(r'^\d+(\.\d+)?(cm|mm|g|mg|ml|L|kg)$', text):
         return True, "dimension"
 
+    # 제품 설명 텍스트 거부 (POINT01, STEP1, PDRN5 등)
+    if re.match(r'^(POINT|STEP|TIP|NOTE|PDRN)\d*$', text, re.IGNORECASE):
+        return True, "product_description"
+
+    # 2글자 한글 단어 중 성분이 아닌 것 거부
+    # (세린, 멘톨, 알진, 류신, 발린, 향료, 아가 등은 유효한 성분)
+    INVALID_2CHAR_KOREAN = {
+        '고민', '어린', '그린', '여린', '마린', '계산', '끌올', '폴리', '에틸', '펜타', '헥산',
+        '디엔', '피피', '피엠', '피비', '유전', '영양', '촉촉', '보습', '피부', '탄력',
+        '주름', '미백', '기미', '잡티', '결점', '모공', '각질', '톤업', '윤기',
+        # 추가: 잘못 파싱된 2글자 단어들
+        '중산', '감염', '아가', '초유', '소듐', '트리', '오일', '부탄', '프로', '메틸',
+    }
+    if len(text) == 2 and re.match(r'^[가-힣]{2}$', text) and text in INVALID_2CHAR_KOREAN:
+        return True, "invalid_2char"
+
     # 한글 동사형 어미로 끝나는 단어 거부
     if re.search(r'(할|된|한|는|을|를|가|이|에|로|의|과|와|도|만|서|라|다)$', text):
         # 화학 성분명 어미 예외 체크
@@ -672,6 +933,31 @@ def _is_noise_or_stopword(text: str) -> tuple:
     # 완전 일치 불용어
     if text in INGREDIENT_STOPWORDS:
         return True, "stopword"
+
+    # === 영문 노이즈 필터링 ===
+    # 순수 영문 단어 중 화학 성분이 아닌 것 거부
+    if re.match(r'^[A-Za-z]+$', text):
+        # 허용되는 영문 성분 패턴
+        VALID_ENGLISH_INGREDIENTS = {
+            'Water', 'Aqua', 'Glycerin', 'Niacinamide', 'Panthenol', 'Retinol',
+            'Tocopherol', 'Collagen', 'Elastin', 'Ceramide', 'Squalane',
+            'Allantoin', 'Adenosine', 'Caffeine', 'Menthol', 'Urea',
+            'Dimethicone', 'Silicone', 'Paraben', 'BHT', 'BHA', 'PEG', 'PPG',
+            'MEA', 'TEA', 'DEA', 'EDTA', 'CI', 'UV',
+        }
+        # 영문 성분 접미사 패턴
+        ENGLISH_SUFFIX_PATTERNS = [
+            r'.*(ol|ate|ide|ine|one|ene|ose|ase|ane|yl|ic|in)$',  # 화학 접미사
+            r'^(Hydrogenated|Hydrolyzed|PEG|PPG|CI)\d*.*$',  # 접두사 패턴
+        ]
+
+        is_valid_english = text in VALID_ENGLISH_INGREDIENTS
+        has_chemical_suffix = any(re.match(p, text, re.IGNORECASE) for p in ENGLISH_SUFFIX_PATTERNS)
+
+        if not is_valid_english and not has_chemical_suffix:
+            # 일반 영문 단어 (노이즈)
+            if len(text) <= 10:  # 짧은 영문 단어는 대부분 노이즈
+                return True, "english_noise"
 
     # 불용어 포함 체크: 긴 텍스트(12자 이상)에만 적용
     # 짧은 성분명에서 오탐 방지
@@ -743,14 +1029,34 @@ def _check_chemical_patterns(text: str) -> tuple:
     if re.match(r'^.+(셀룰로오스|셀룰로스)$', text) and len(text) >= 6:
         return True, 0.85, "cellulose_derivative"
 
+    # === 영문 노이즈 블랙리스트 체크 (화학 패턴 매칭 전) ===
+    ENGLISH_NOISE_WORDS = {
+        'Book', 'Marine', 'Complex', 'Extra', 'Super', 'Care', 'Solution', 'Soluti',
+        'Recipe', 'Before', 'After', 'Texture', 'Ingredient', 'Recommend', 'Point',
+        'Step', 'Tip', 'Note', 'How', 'What', 'Why', 'Key', 'Best', 'New', 'Special',
+        'Plus', 'Pro', 'Max', 'Ultra', 'Premium', 'Natural', 'Organic', 'Pure',
+        'Active', 'Advanced', 'Essential', 'Ultimate', 'Intensive', 'Free',
+        'SUPER', 'EXTRA', 'PLUS', 'PRO', 'MAX', 'ULTRA', 'MARINE', 'RECIPE',
+        'VPROVE', 'MEDIPEEL', 'Oriox', 'LipBalm', 'Essense', 'Essence',
+        # 영문+숫자 노이즈 (마케팅 문구)
+        'SUPER9', 'SUPER5', 'PLUS9', 'EXTRA9', 'PRO5', 'STEP1', 'STEP2', 'STEP3',
+        'POINT1', 'POINT2', 'POINT3', 'TIP1', 'TIP2',
+    }
+    if text in ENGLISH_NOISE_WORDS:
+        return None  # 노이즈로 처리 (나중에 거부됨)
+
     # 영문 화학명 패턴 (예: Glycerin, Tocopherol)
-    if re.match(r'^[A-Z][a-z]{3,}(yl|ol|in|ate|ide|ene|one|ose)?$', text):
+    # 반드시 화학 접미사가 있어야 함
+    if re.match(r'^[A-Z][a-z]{3,}(yl|ol|in|ate|ide|ene|one|ose|ine|ane|ene)$', text):
         return True, 0.8, "english_chemical"
 
     # 복합 성분명 (영문+숫자, 예: PEG-14M, CI77891)
+    # SPF, PA 등 제품 규격은 제외
     if re.match(r'^[A-Za-z]+[-]?\d+[A-Za-z]*$', text) and len(text) >= 4:
         if not re.match(r'^\d{5,}$', text):
-            return True, 0.75, "alphanumeric_compound"
+            # SPF, PA, SUPER, STEP, POINT 등 규격/마케팅 패턴 제외
+            if not re.match(r'^(SPF|PA|UV|LED|SUPER|STEP|POINT|TIP|EXTRA|PLUS)\d+', text, re.IGNORECASE):
+                return True, 0.75, "alphanumeric_compound"
 
     return None
 
@@ -784,14 +1090,15 @@ def is_valid_ingredient(text: str, known_db: set = KNOWN_INGREDIENTS) -> tuple:
 
     text = text.strip()
 
-    # 1. 빠른 거부 필터
+    # 1. 알려진 성분 DB 매칭 (최고 우선순위)
+    # known_db에 있으면 다른 필터 무시하고 바로 승인
+    if text in known_db:
+        return True, 1.0, "known_ingredient"
+
+    # 2. 빠른 거부 필터
     is_rejected, reason = _check_fast_rejection(text)
     if is_rejected:
         return False, 0.0, reason
-
-    # 2. 알려진 성분 DB 매칭 (최고 신뢰도)
-    if text in known_db:
-        return True, 1.0, "known_ingredient"
 
     # 3. 화학 성분 패턴 매칭 (노이즈 체크보다 먼저 수행)
     # 화학 패턴에 매칭되면 불용어 체크를 건너뜀 (폴리글리세릴-6올레에이트 등)
@@ -813,7 +1120,7 @@ def is_valid_ingredient(text: str, known_db: set = KNOWN_INGREDIENTS) -> tuple:
     return False, 0.0, "no_pattern_match"
 
 
-def extract_from_text(text: str, source: str, threshold: float = None) -> list:
+def extract_from_text(text: str, source: str, threshold: float = None, force_mode: bool = False) -> list:
     """
     텍스트에서 성분 추출
 
@@ -821,11 +1128,15 @@ def extract_from_text(text: str, source: str, threshold: float = None) -> list:
         text: OCR 또는 ALT 텍스트
         source: 출처 (HTML, ALT_0, OCR_0_1 등)
         threshold: confidence threshold (None이면 source 기반 자동 결정)
+        force_mode: True이면 헤더 검사 없이 전체 텍스트를 성분으로 처리
+                    (호출자가 이미 성분 섹션으로 판단한 경우 사용)
 
     Returns:
         list: [{'ingredient': str, 'source': str}, ...]
     """
     import re
+    import logging
+    logger = logging.getLogger(__name__)
     ingredients = []
 
     # Phase 3: 소스별 threshold 적용
@@ -836,36 +1147,84 @@ def extract_from_text(text: str, source: str, threshold: float = None) -> list:
         else:
             threshold = 0.85
 
-    # 실제 성분명 패턴 (성분 시작 검증용)
+    # 실제 성분명 패턴 (성분 시작 검증용) - 확장
     REAL_INGREDIENT_PATTERNS = [
         '정제수', '티타늄', '글리세린', '부틸렌', '나이아신', '다이메티콘',
         '사이클로', '에칠헥실', '소듐', '토코페롤', '히알루론', '알란토인',
         '판테놀', '아데노신', '세라마이드', '콜라겐', '레티놀', '비타민',
+        '프로판다이올', '카보머', '페녹시에탄올', '향료', '시트릭', '스쿠알란',
+        '세틸알코올', '헥산다이올', '알지닌', '세린', '폴리소르베이트',
+        '아이소도데케인', '헥실렌글라이콜', '리모넨', '리날룰',
     ]
+
+    # === 구분자 유형 판단 ===
+    # 쉼표가 거의 없으면 공백 구분자로 판단
+    text_flat_check = text.replace('\n', ' ')
+    # 화학 번호 쉼표 제외 (1,2-헥산다이올 등)
+    comma_count_check = len(re.findall(r',(?!\d-)', text_flat_check))
+    is_space_separated = comma_count_check < 5
+
+    if is_space_separated:
+        logger.debug(f"공백 구분자 모드 감지 (쉼표 {comma_count_check}개)")
+        return _extract_space_separated(text, source, threshold, REAL_INGREDIENT_PATTERNS, logger)
+
+    # === 기존 쉼표 구분자 로직 ===
+
+    # === 헤더 없이 성분 감지 모드 ===
+    # force_mode가 True이면 무조건 성분 모드
+    # force_mode=False이면 키워드 기반으로만 동작 (ALT 텍스트 등에서 정확한 파싱 필요)
+    detected_ingredient_count = sum(1 for ing in REAL_INGREDIENT_PATTERNS if ing in text_flat_check)
+
+    # force_mode=True일 때만 대표 성분명 개수로 강제 추출
+    # force_mode=False이면 키워드 기반으로만 추출 (예: "(전성분)" 이후만 파싱)
+    force_ingredient_mode = force_mode
+    if force_ingredient_mode:
+        logger.debug(f"성분 강제 추출 모드: force_mode={force_mode}, 감지된 성분={detected_ingredient_count}개")
 
     # 전처리: "전성분" 키워드가 텍스트 중간에 있는 경우 처리
     # 예: "에틸헥실팔미테이트,\n글리세린,\n...\n전성분\n폴리글리세릴..."
     # 이 경우 키워드 앞의 성분들도 추출해야 함
-    text_flat = text.replace('\n', ' ').replace('  ', ' ')
-    mid_keyword_patterns = ['전성분', '성분은', '[성분명]', '성분명]']
+    # 단, force_mode=True일 때만 적용 (ALT 텍스트 등에서 "비타민" 같은 제품명을 성분으로 오인 방지)
+    if force_mode:
+        text_flat = text.replace('\n', ' ').replace('  ', ' ')
+        mid_keyword_patterns = ['전성분', '성분은', '[성분명]', '성분명]']
 
-    for kw in mid_keyword_patterns:
-        kw_pos = text_flat.find(kw)
-        if kw_pos > 10:  # 키워드가 텍스트 시작이 아닌 중간에 있음
-            before_keyword = text_flat[:kw_pos]
-            # 키워드 앞에 실제 성분명이 있는지 확인
-            if any(ing in before_keyword for ing in REAL_INGREDIENT_PATTERNS):
-                # 키워드를 쉼표로 대체하여 전체를 성분으로 처리
-                text = text_flat.replace(kw, ',')
-                break
+        for kw in mid_keyword_patterns:
+            kw_pos = text_flat.find(kw)
+            if kw_pos > 10:  # 키워드가 텍스트 시작이 아닌 중간에 있음
+                before_keyword = text_flat[:kw_pos]
+                # 키워드 앞에 실제 성분명이 있는지 확인
+                if any(ing in before_keyword for ing in REAL_INGREDIENT_PATTERNS):
+                    # 키워드를 쉼표로 대체하여 전체를 성분으로 처리
+                    text = text_flat.replace(kw, ',')
+                    break
 
     lines = text.split('\n')
-    in_ingredients = False
+    in_ingredients = False  # 성분 키워드를 만날 때까지 대기
     ingredient_text = []
 
+    # force_ingredient_mode일 때: 줄 단위가 아닌 전체 텍스트에서 성분 추출
+    # (2열 레이아웃에서 STOP 키워드가 성분 중간에 섞여 있어도 처리 가능)
+    if force_ingredient_mode:
+        # 전체 텍스트를 공백으로 연결하여 성분 텍스트로 사용
+        # 줄바꿈으로 잘린 성분명이 전처리에서 합쳐질 수 있도록 함
+        # 예: "나이아신아마\n이드," → "나이아신아마 이드," → "나이아신아마이드,"
+        all_lines = []
+        for line in lines:
+            line_stripped = line.strip()
+            if line_stripped:
+                all_lines.append(line_stripped)
+        # 공백으로 연결 (전처리에서 한글 사이 공백이 제거됨)
+        if all_lines:
+            ingredient_text.append(' '.join(all_lines))
+
+        # 이미 처리했으므로 lines를 비움
+        lines = []
+
     # 첫 줄에 실제 성분명이 있으면 바로 성분 섹션으로 판단 (Clova OCR 결과 대응)
+    # 단, force_mode=True일 때만 (force_mode=False면 키워드 기반으로 동작)
     first_line = lines[0].strip() if lines else ''
-    if any(ing in first_line for ing in REAL_INGREDIENT_PATTERNS):
+    if force_mode and first_line and any(ing in first_line for ing in REAL_INGREDIENT_PATTERNS):
         in_ingredients = True
         ingredient_text.append(first_line)
         lines = lines[1:]  # 첫 줄은 이미 추가했으므로 제외
@@ -901,19 +1260,21 @@ def extract_from_text(text: str, source: str, threshold: float = None) -> list:
 
                 # 키워드가 중간에 있는지 확인 (키워드 앞에도 성분명이 있는 경우)
                 # 예: "솔비톨,옥수수전분,...전성분...세라마이드엔피"
+                # 단, force_mode=True일 때만 적용 (ALT 텍스트에서 "비타민" 같은 제품명을 성분으로 오인 방지)
                 keyword_in_middle = False
-                for kw in ['전성분', '성분은', '성분:', '[성분명]', '성분명]']:
-                    kw_pos = line.find(kw)
-                    if kw_pos > 0:  # 키워드가 라인 시작이 아닌 중간에 있음
-                        before_keyword = line[:kw_pos]
-                        # 키워드 앞에 실제 성분명이 있는지 확인
-                        if any(ing in before_keyword for ing in REAL_INGREDIENT_PATTERNS):
-                            keyword_in_middle = True
-                            # 키워드를 쉼표로 대체하여 전체 라인을 성분으로 처리
-                            cleaned_line = line.replace(kw, ',').strip()
-                            ingredient_text.append(cleaned_line)
-                            logger.debug(f"키워드 중간 삽입 감지: '{kw}' → 전체 라인 처리")
-                            break
+                if force_mode:
+                    for kw in ['전성분', '성분은', '성분:', '[성분명]', '성분명]']:
+                        kw_pos = line.find(kw)
+                        if kw_pos > 0:  # 키워드가 라인 시작이 아닌 중간에 있음
+                            before_keyword = line[:kw_pos]
+                            # 키워드 앞에 실제 성분명이 있는지 확인
+                            if any(ing in before_keyword for ing in REAL_INGREDIENT_PATTERNS):
+                                keyword_in_middle = True
+                                # 키워드를 쉼표로 대체하여 전체 라인을 성분으로 처리
+                                cleaned_line = line.replace(kw, ',').strip()
+                                ingredient_text.append(cleaned_line)
+                                logger.debug(f"키워드 중간 삽입 감지: '{kw}' → 전체 라인 처리")
+                                break
 
                 if not keyword_in_middle:
                     # 기존 로직: 키워드 뒤의 텍스트만 추출
@@ -922,6 +1283,12 @@ def extract_from_text(text: str, source: str, threshold: float = None) -> list:
 
                     if match:
                         remaining = match.group(1).strip()
+                        # STOP 키워드가 있으면 그 이전까지만 사용
+                        for stop in INGREDIENT_STOP_KEYWORDS:
+                            stop_pos = remaining.find(stop)
+                            if stop_pos > 0:
+                                remaining = remaining[:stop_pos].strip()
+                                break
                         if remaining:
                             ingredient_text.append(remaining)
                     else:
@@ -944,8 +1311,44 @@ def extract_from_text(text: str, source: str, threshold: float = None) -> list:
     # 파싱: 쉼표, 공백 모두 고려
     full_text = ' '.join(ingredient_text)
 
+    # 전처리 0: 줄바꿈으로 분리된 성분명 합치기
+    # 예: "엑사펩타 이드-9" → "엑사펩타이드-9"
+    # 한글 + 공백 + 한글(또는 하이픈+숫자)이면 공백 제거
+    full_text = re.sub(r'([가-힣])\s+([가-힣])', r'\1\2', full_text)
+    full_text = re.sub(r'([가-힣])\s+(이드-?\d+)', r'\1\2', full_text)  # ~펩타 이드-9
+    full_text = re.sub(r'([가-힣])\s+(레이트)', r'\1\2', full_text)  # ~카프릴 레이트
+    full_text = re.sub(r'(-\d+)\s+([가-힣])', r'\1\2', full_text)  # 폴리글리세릴-10 스테아레이트
+    full_text = re.sub(r'([가-힣])\s+(-\d+)', r'\1\2', full_text)  # 폴리글리세릴 -10미리스테이트
+
+    # 전처리 0-1: 영어/숫자 + 공백 + 한글 패턴 합치기
+    # 예: "PEG-100 스테아레이트" → "PEG-100스테아레이트"
+    # 예: "C12-14 파레스-12" → "C12-14파레스-12"
+    full_text = re.sub(r'([A-Za-z0-9-]+)\s+([가-힣])', r'\1\2', full_text)
+    # 예: "피이지- 100스테아레이트" → "피이지-100스테아레이트"
+    full_text = re.sub(r'([가-힣])-\s+(\d)', r'\1-\2', full_text)
+
+    # 전처리 1: 천 단위 구분자 쉼표 제거 (30,000 → 30000)
+    # 주의: 1,2-헥산다이올 같은 화학명은 보존해야 함
+    # 천 단위는 쉼표 뒤에 3자리 숫자가 오는 경우만 처리
+    full_text = re.sub(r'(\d),(\d{3})(?!\d)', r'\1\2', full_text)
+
+    # 전처리 2: ppm/ppb 농도 패턴 제거 (OCR 줄바꿈 오류 대응)
+    # 주의: 쉼표는 제거하지 않음 (성분 구분자 보존)
+    # 예: "(30000ppm)," → ","  (쉼표 보존)
+    full_text = re.sub(r'\(\s*[\d\.]+\s*(ppm|ppb|PPM|PPB)?\s*\)', '', full_text)
+    full_text = re.sub(r'\(\s*[\d\.]+\s*\)', '', full_text)  # 숫자만 있는 괄호도 제거
+    full_text = re.sub(r'\bppm\b', '', full_text, flags=re.IGNORECASE)  # 단독 ppm 제거
+    full_text = re.sub(r'\bppb\b', '', full_text, flags=re.IGNORECASE)  # 단독 ppb 제거
+    # OCR 오류: 괄호 없이 숫자+ppb 붙은 경우 (소듐아스코빌포스페이트500 ppb → 소듐아스코빌포스페이트)
+    full_text = re.sub(r'(\D)\d+\s*(ppm|ppb)', r'\1', full_text, flags=re.IGNORECASE)
+
     # 1차: 쉼표로 분리
+    # 주의: 1,2-헥산다이올 같은 화학 번호의 쉼표는 보호
+    # 패턴: 숫자,숫자- (예: 1,2- 2,3- 등)
+    full_text = re.sub(r'(\d),(\d-)', r'\1@COMMA@\2', full_text)
     parts = full_text.split(',')
+    # 보호된 쉼표 복원
+    parts = [p.replace('@COMMA@', ',') for p in parts]
 
     seen = set()  # 중복 방지
 
@@ -980,3 +1383,383 @@ def extract_from_text(text: str, source: str, threshold: float = None) -> list:
                         seen.add(normalized)
 
     return ingredients
+
+
+def _extract_space_separated(text: str, source: str, threshold: float,
+                             real_patterns: list, logger) -> list:
+    """
+    공백으로 구분된 성분 텍스트 처리 (쉼표가 거의 없는 경우)
+
+    Args:
+        text: 원본 텍스트
+        source: 출처
+        threshold: confidence threshold
+        real_patterns: 실제 성분명 패턴 리스트
+        logger: 로거
+
+    Returns:
+        list: [{'ingredient': str, 'source': str}, ...]
+    """
+    import re
+
+    ingredients = []
+    seen = set()
+
+    # 1. 농도 패턴 제거 (290ppm), (10ppm) 등
+    text = re.sub(r'\(\s*\d+\s*(ppm|ppb|%)\s*\)', '', text, flags=re.IGNORECASE)
+
+    # 2. 메타데이터 키워드가 있는 줄 제거 (성분 시작 전)
+    lines = text.split('\n')
+
+    # 성분 시작점 찾기
+    ingredient_start_idx = None
+    ingredient_keywords = ['화장품법에 따라', '전성분', '모든 성분']
+
+    for i, line in enumerate(lines):
+        if any(kw in line for kw in ingredient_keywords):
+            ingredient_start_idx = i
+            break
+
+    # 성분 시작점 이전 줄 제거
+    if ingredient_start_idx is not None:
+        lines = lines[ingredient_start_idx:]
+
+    # 성분 종료점 찾기
+    stop_keywords = ['기능성화장품', '식품의약품', '심사필', '주의사항', '사용방법']
+    ingredient_end_idx = len(lines)
+
+    for i, line in enumerate(lines):
+        if any(kw in line for kw in stop_keywords):
+            ingredient_end_idx = i
+            break
+
+    lines = lines[:ingredient_end_idx]
+
+    # 3. 메타데이터 줄 필터링
+    filtered_lines = []
+    for line in lines:
+        line_stripped = line.strip()
+        # 메타데이터 키워드가 있으면 건너뜀
+        if any(kw in line_stripped for kw in METADATA_KEYWORDS):
+            continue
+        if line_stripped:
+            filtered_lines.append(line_stripped)
+
+    # 4. 줄 끝 하이픈 또는 열린 괄호로 잘린 성분 합치기
+    # 예: '코코-카\n  프릴레이트' → '코코-카프릴레이트'
+    # 예: '하이드로네이티드폴리(C6-\n  기재해야... 14올레핀)' → 합침
+    merged_lines = []
+    i = 0
+    while i < len(filtered_lines):
+        line = filtered_lines[i]
+
+        # 열린 괄호가 있고 닫힌 괄호가 없으면 다음 줄과 합치기 (우선 처리)
+        # 예: '하이드로네이티드폴리(C6-' + '기재해야... 14올레핀)'
+        open_paren_count = line.count('(') - line.count(')')
+        if open_paren_count > 0 and i + 1 < len(filtered_lines):
+            next_line = filtered_lines[i + 1]
+            # 다음 줄에서 닫힌 괄호 찾기
+            if ')' in next_line:
+                # 닫힌 괄호까지만 추출
+                paren_pos = next_line.find(')')
+                paren_content = next_line[:paren_pos + 1]
+                remaining = next_line[paren_pos + 1:].strip()
+
+                # 키워드 제거 후 합치기
+                paren_content = re.sub(r'기재해야\s*하는\s*모든\s*성분\s*', '', paren_content)
+                merged_lines.append(line + paren_content)
+
+                # 나머지가 있으면 별도 줄로 추가
+                if remaining:
+                    merged_lines.append(remaining)
+                i += 2
+                continue
+
+        # 하이픈으로 끝나면 다음 줄과 합치기
+        if line.endswith('-') and i + 1 < len(filtered_lines):
+            next_line = filtered_lines[i + 1]
+            # 다음 줄 시작이 한글, 숫자, 영어면 합침
+            if next_line and re.match(r'^[가-힣0-9A-Za-z]', next_line):
+                merged_lines.append(line + next_line)
+                i += 2
+                continue
+
+        merged_lines.append(line)
+        i += 1
+
+    # 5. 줄 끝 한글 + 다음 줄 접미사 합치기
+    # 예: '다이포타슘포스페\n  이트' → '다이포타슘포스페이트'
+    final_lines = []
+    suffix_pattern = r'^(이트|에이트|레이트|라이드|올|린|드|릴|놀|롤|산|염|논|넨|닌|눌|넬)\b'
+
+    i = 0
+    while i < len(merged_lines):
+        line = merged_lines[i]
+
+        # 다음 줄이 접미사로 시작하면 합치기
+        if i + 1 < len(merged_lines):
+            next_line = merged_lines[i + 1]
+            if re.match(suffix_pattern, next_line):
+                # 현재 줄과 다음 줄 합치기
+                final_lines.append(line + ' ' + next_line)
+                i += 2
+                continue
+
+        final_lines.append(line)
+        i += 1
+
+    # 6. 텍스트 합치기
+    text = ' '.join(final_lines)
+
+    # 7. 성분 키워드 제거 (성분명 사이에 섞인 키워드)
+    text = re.sub(r'화장품법에\s*따라', ' ', text)
+    text = re.sub(r'기재해야\s*하는\s*모든\s*성분', ' ', text)
+    text = re.sub(r'기재해야\s*하는', ' ', text)
+    text = re.sub(r'모든\s*성분', ' ', text)
+
+    # 8. 하이픈 뒤 공백 제거
+    # 예: '코코-카 프릴레이트' → '코코-카프릴레이트'
+    text = re.sub(r'-\s+([가-힣0-9A-Za-z])', r'-\1', text)
+
+    # 9. 괄호 안의 공백 제거
+    # 예: '(C6- 14올레핀)' → '(C6-14올레핀)'
+    def remove_space_in_parens(m):
+        return m.group(0).replace(' ', '')
+    text = re.sub(r'\([^)]+\)', remove_space_in_parens, text)
+
+    # 10. 여러 공백을 하나로
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    logger.debug(f"공백구분자 전처리 결과: {text[:200]}...")
+
+    # 11. 성분 시작점 찾기 (첫 번째 유효 성분)
+    start_pos = len(text)
+    for ing in real_patterns:
+        pos = text.find(ing)
+        if pos >= 0 and pos < start_pos:
+            start_pos = pos
+
+    if start_pos < len(text):
+        text = text[start_pos:]
+
+    # 12. 공백으로 분리
+    tokens = text.split()
+
+    # 13. 토큰 병합: 하이픈으로 끝나면 다음 토큰과 합치기
+    # 예: '코코-카' + '프릴레이트/카프레이트' → '코코-카프릴레이트/카프레이트'
+    merged_tokens = []
+
+    # 불완전 접두사 패턴 (하이픈+한글로 끝나는 불완전한 성분명)
+    # 예: 코코-카, 라우릴-글, 세틸-피 등
+    incomplete_prefix_pattern = r'-[가-힣]{1,2}$'
+
+    # 접미사 시작 패턴 (성분명 접미사로 시작하는 토큰)
+    suffix_start_pattern = r'^(프릴|릴레이트|레이트|라이드|글루코|글라이콜|에이트|아마이드|올레|스테아|미리스|팔미)'
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        # 하이픈으로 끝나고 다음 토큰이 있으면 합침
+        if token.endswith('-') and i + 1 < len(tokens):
+            next_token = tokens[i + 1]
+            merged_tokens.append(token + next_token)
+            i += 2
+        # 불완전 접두사 패턴 (-한글1~2자로 끝남) + 다음 토큰이 접미사로 시작
+        # 예: '코코-카' + '프릴레이트' → '코코-카프릴레이트'
+        elif re.search(incomplete_prefix_pattern, token) and i + 1 < len(tokens):
+            next_token = tokens[i + 1]
+            if re.match(suffix_start_pattern, next_token):
+                merged_tokens.append(token + next_token)
+                i += 2
+            else:
+                merged_tokens.append(token)
+                i += 1
+        # 한글로 끝나고 다음 토큰이 접미사면 합치기
+        elif re.search(r'[가-힣]$', token) and i + 1 < len(tokens):
+            next_token = tokens[i + 1]
+            if re.match(suffix_pattern, next_token):
+                merged_tokens.append(token + next_token)
+                i += 2
+            else:
+                merged_tokens.append(token)
+                i += 1
+        else:
+            merged_tokens.append(token)
+            i += 1
+
+    # 14. 추가 알려진 성분 (유효성 검증에서 놓칠 수 있는 성분)
+    extra_known = {
+        '비니거', '구아이아줄렌', '아이소도데케인', '헥실렌글라이콜',
+        '하이드로네이티드폴리', '벤조트라이아졸릴도데실p-크레솔',
+        '코코-카프릴레이트/카프레이트', '카프릴릴/카프릴글루코사이드',
+    }
+
+    # 15. 각 토큰을 성분으로 검증
+    for token in merged_tokens:
+        normalized = normalize_ingredient_name(token)
+        if normalized and len(normalized) >= 2 and normalized not in seen:
+            # 추가 알려진 성분 체크
+            if normalized in extra_known:
+                ingredients.append({'ingredient': normalized, 'source': source})
+                seen.add(normalized)
+                continue
+
+            is_valid, conf, reason = is_valid_ingredient(normalized)
+            if is_valid and conf >= threshold:
+                ingredients.append({'ingredient': normalized, 'source': source})
+                seen.add(normalized)
+
+    logger.debug(f"공백구분자 추출 결과: {len(ingredients)}개 성분")
+    return ingredients
+
+
+def extract_product_section(text: str, product_name: str) -> str:
+    """
+    멀티 제품/옵션이 포함된 텍스트에서 특정 제품의 성분 섹션만 추출
+
+    두 가지 케이스 처리:
+    1. 옵션 번호: [52 인더다크], [53 인더라이트] 등
+    2. 제품명: 감자캡슐팩, 알로에캡슐팩, 화산송이캡슐팩 등
+
+    Args:
+        text: OCR/ALT에서 추출한 전체 텍스트
+        product_name: 크롤링 중인 제품명
+
+    Returns:
+        해당 제품의 성분 섹션만 추출된 텍스트 (못 찾으면 원본 반환)
+    """
+    if not text or not product_name:
+        return text
+
+    # === 케이스 1: 옵션 번호 기반 ([52 인더다크] 등) ===
+    option_match = re.search(r'\[(\d+)\s*([^\]]*)\]', product_name)
+    if option_match:
+        option_num = option_match.group(1)
+        # [숫자 ...] 패턴으로 섹션 분리
+        pattern = rf'\[{option_num}\s+[^\]]*\]\s*(.*?)(?=\[\d+\s+|\Z)'
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            section = match.group(1).strip()
+            if len(section) > 20:  # 충분한 내용이 있는 경우만
+                logger.debug(f"옵션 [{option_num}] 섹션 추출: {len(section)}자")
+                return section
+
+    # === 케이스 2: 제품명 기반 (감자캡슐팩 등) ===
+    # 제품명에서 핵심 키워드 추출 (브랜드, 용량 등 제외)
+    keywords = _extract_product_keywords(product_name)
+
+    if keywords:
+        # 텍스트에서 해당 제품 섹션 찾기
+        section = _find_product_section(text, keywords)
+        if section and len(section) > 20:
+            logger.debug(f"제품명 키워드 {keywords} 섹션 추출: {len(section)}자")
+            return section
+
+    # 못 찾으면 원본 반환
+    return text
+
+
+def _extract_product_keywords(product_name: str) -> list:
+    """
+    제품명에서 핵심 키워드 추출
+
+    예: "화산송이 캡슐팩" → ["화산송이", "캡슐팩"]
+        "본셉 젤 아이라이너 [01 젤블랙]" → ["젤", "아이라이너"]
+    """
+    # 옵션 부분 제거
+    name = re.sub(r'\[\d+[^\]]*\]', '', product_name).strip()
+
+    # 브랜드명 제거 (앞쪽 2-4글자 단어가 브랜드인 경우가 많음)
+    # 흔한 브랜드: 다이소, 본셉, 머지, 프릴루드 딘토, 더봄, 베리썸 등
+    brands = ['다이소', '본셉', '머지', '프릴루드', '딘토', '더봄', '베리썸',
+              '파넬', '에뛰드', '플레이', '태그', '펠트', '밀크터치', '꽁래쉬',
+              'VT', '메디필', '제이엠솔루션', '린제이', '채비공간', '비프루브']
+
+    for brand in brands:
+        name = re.sub(rf'^{re.escape(brand)}\s*', '', name, flags=re.IGNORECASE)
+
+    # 용량/단위 제거
+    name = re.sub(r'\d+\s*(ml|g|mg|매|개입|P)\b', '', name, flags=re.IGNORECASE)
+
+    # 괄호 내용 제거
+    name = re.sub(r'\([^)]*\)', '', name)
+
+    # 공백 정규화
+    name = ' '.join(name.split())
+
+    # 핵심 단어 추출 (2글자 이상)
+    words = [w for w in name.split() if len(w) >= 2]
+
+    # 너무 일반적인 단어 제거
+    generic = {'슬림', '프로', '수퍼', '에어', '픽싱', '롱', '듀얼', '트리플'}
+    keywords = [w for w in words if w not in generic]
+
+    return keywords[:3]  # 최대 3개 키워드
+
+
+def _find_product_section(text: str, keywords: list) -> str:
+    """
+    텍스트에서 키워드와 매칭되는 제품 섹션 찾기
+
+    예: 키워드 ["화산송이", "캡슐팩"]
+        텍스트에서 "화산송이캡슐팩" 또는 "화산송이 캡슐팩" 찾기
+    """
+    if not keywords:
+        return text
+
+    # 공백 무시 패턴 생성
+    # "화산송이캡슐팩" → "화\s*산\s*송\s*이\s*캡\s*슐\s*팩"
+    def make_flexible_pattern(keyword):
+        return r'\s*'.join(re.escape(c) for c in keyword)
+
+    # 모든 키워드가 포함된 줄 찾기 (공백 무시)
+    lines = text.split('\n')
+    target_line_idx = None
+
+    for i, line in enumerate(lines):
+        line_normalized = line.replace(' ', '').lower()
+
+        # 모든 키워드가 줄에 포함되어 있는지 확인
+        all_found = all(
+            kw.replace(' ', '').lower() in line_normalized
+            for kw in keywords
+        )
+
+        if all_found:
+            target_line_idx = i
+            break
+
+        # 키워드가 연속으로 나타나는지 확인 (예: "화산송이캡슐팩")
+        combined = ''.join(keywords).replace(' ', '').lower()
+        if combined in line_normalized:
+            target_line_idx = i
+            break
+
+    if target_line_idx is None:
+        return text
+
+    # 해당 줄부터 다음 제품명까지 추출
+    # 다음 제품명 패턴: 한글 2-6글자 + (캡슐팩|팩|라이너|섀도우|마스카라 등)
+    product_name_pattern = r'^[가-힣]{2,10}(캡슐팩|팩|라이너|섀도우|마스카라|브로우|세럼)\s*$'
+
+    section_lines = []
+    for j in range(target_line_idx + 1, len(lines)):
+        line = lines[j].strip()
+
+        # 다음 제품명이 나오면 중단
+        if re.match(product_name_pattern, line):
+            break
+
+        # 빈 줄이 연속 2개 이상이면 중단
+        if not line:
+            if section_lines and not section_lines[-1]:
+                break
+
+        section_lines.append(line)
+
+    # 끝의 빈 줄 제거
+    while section_lines and not section_lines[-1]:
+        section_lines.pop()
+
+    return '\n'.join(section_lines)
