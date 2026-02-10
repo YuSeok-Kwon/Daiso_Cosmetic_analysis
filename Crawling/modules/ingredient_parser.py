@@ -7,6 +7,23 @@ import logging
 # 로거 설정
 logger = logging.getLogger(__name__)
 
+# v2 파서 import (고도화된 성분 파싱)
+try:
+    from modules.ingredient_parser_v2 import (
+        IngredientParserV2,
+        TextNormalizer,
+        IngredientFilter,
+        IngredientSectionExtractor,
+        IngredientDictionary,
+        postprocess_ingredients_v2,
+        get_clean_ingredients,
+    )
+    V2_PARSER_AVAILABLE = True
+    logger.info("ingredient_parser_v2 로드 성공")
+except ImportError:
+    V2_PARSER_AVAILABLE = False
+    logger.warning("ingredient_parser_v2 로드 실패 - 기존 파서 사용")
+
 # OCR 오인식 패턴 및 수정 맵 (실제 크롤링 데이터 기반)
 OCR_CORRECTIONS = {
     # === 소듐(Sodium) 변형 ===
@@ -241,6 +258,48 @@ OCR_CORRECTIONS = {
     '전성분': '',  # 전성분변성알코올 → 변성알코올
     '[전성분]': '',
     '(전성분)': '',
+
+    # === 숫자 0 오인식 (아이 → 0) ===
+    '폴리아0소부텐': '폴리아이소부텐',
+    '하이드로제네이티드폴리아0소부텐': '하이드로제네이티드폴리아이소부텐',
+    '아0소스테아릭': '아이소스테아릭',
+    '아0소프로필': '아이소프로필',
+    '아0소도데케인': '아이소도데케인',
+    '트라0글리세라이드': '트라이글리세라이드',
+    '다0메티콘': '다이메티콘',
+    '0소스테아릴': '아이소스테아릴',
+    '0소파라핀': '아이소파라핀',
+    '0소노닐': '아이소노닐',
+    '0소헥사데케인': '아이소헥사데케인',
+
+    # === 숫자 1 오인식 (레이/리/이 → 1) ===
+    '스테아러1이트': '스테아레이트',
+    '솔비탄아이소스테아러1이트': '솔비탄아이소스테아레이트',
+    '라우러1이트': '라우레이트',
+    '팔미터1이트': '팔미테이트',
+    '올러1이트': '올레이트',
+    '미리스터1이트': '미리스테이트',
+    '폴1글리세릴': '폴리글리세릴',
+    '폴1아크릴': '폴리아크릴',
+    '폴1소르베이트': '폴리소르베이트',
+    '하이알루로네1트': '하이알루로네이트',
+    '글리세릴트라1스테아레이트': '글리세릴트라이스테아레이트',
+    '트라1에톡시실릴': '트라이에톡시실릴',
+
+    # === 자음 혼동 (알 → 일) ===
+    '하이일루로': '하이알루로',
+    '하이일루론': '하이알루론',
+    '하이일루로네이트': '하이알루로네이트',
+    '하이일루로닉': '하이알루로닉',
+    '소듐하이일루로네이트': '소듐하이알루로네이트',
+    '하이드롤라이즈드소듐하이일루로네이트': '하이드롤라이즈드소듐하이알루로네이트',
+
+    # === 기타 OCR 오류 (글리서 → 글리세) ===
+    '글리서라이드': '글리세라이드',
+    '트라이글리서라이드': '트라이글리세라이드',
+    '스테아릭트라이글리서라이드': '스테아릭트라이글리세라이드',
+    '카프릴릭/카프릭트라이글리서라이드': '카프릴릭/카프릭트라이글리세라이드',
+    '카프릴릭/카프릭/미리스틱/스테아릭트라이글리서라이드': '카프릴릭/카프릭/미리스틱/스테아릭트라이글리세라이드',
 }
 
 # 화학 성분 패턴 (정규표현식) - 컴파일하여 성능 최적화
@@ -1120,7 +1179,7 @@ def is_valid_ingredient(text: str, known_db: set = KNOWN_INGREDIENTS) -> tuple:
     return False, 0.0, "no_pattern_match"
 
 
-def extract_from_text(text: str, source: str, threshold: float = None, force_mode: bool = False) -> list:
+def extract_from_text(text: str, source: str, threshold: float = None, force_mode: bool = False, use_v2: bool = True) -> list:
     """
     텍스트에서 성분 추출
 
@@ -1130,6 +1189,7 @@ def extract_from_text(text: str, source: str, threshold: float = None, force_mod
         threshold: confidence threshold (None이면 source 기반 자동 결정)
         force_mode: True이면 헤더 검사 없이 전체 텍스트를 성분으로 처리
                     (호출자가 이미 성분 섹션으로 판단한 경우 사용)
+        use_v2: v2 파서 사용 여부 (기본값: True)
 
     Returns:
         list: [{'ingredient': str, 'source': str}, ...]
@@ -1138,6 +1198,21 @@ def extract_from_text(text: str, source: str, threshold: float = None, force_mod
     import logging
     logger = logging.getLogger(__name__)
     ingredients = []
+
+    # === v2 파서 사용 (고도화된 파싱) ===
+    if use_v2 and V2_PARSER_AVAILABLE:
+        try:
+            v2_ingredients = IngredientParserV2.parse(text, korean_only=True)
+            if v2_ingredients and len(v2_ingredients) >= 3:
+                # v2 결과를 기존 형식으로 변환
+                logger.debug(f"v2 파서 사용: {len(v2_ingredients)}개 성분 추출")
+                return [{'ingredient': ing, 'source': f"{source}_v2"} for ing in v2_ingredients]
+            else:
+                logger.debug(f"v2 파서 결과 부족 ({len(v2_ingredients) if v2_ingredients else 0}개), 기존 파서로 폴백")
+        except Exception as e:
+            logger.warning(f"v2 파서 오류: {e}, 기존 파서로 폴백")
+
+    # === 기존 파서 로직 ===
 
     # Phase 3: 소스별 threshold 적용
     if threshold is None:
