@@ -3,6 +3,11 @@ data/
 *.csv
 *.json
 
+# 예외: Data 디렉토리의 ERD 문서는 추적
+!Data/
+Data/*
+!Data/ERD.md
+
 # 로그 파일
 logs/
 *.log
