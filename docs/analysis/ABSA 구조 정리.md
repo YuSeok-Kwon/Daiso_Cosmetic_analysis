@@ -151,7 +151,7 @@ ABSA(Aspect-Based Sentiment Analysis)는 화장품 리뷰에서 **특정 Aspect*
 
 - Aspect × Sentiment 조합별 균등 샘플링
 - 팀당 100건 목표
-- 최소 confidence 0.95 이상
+- 최소 confidence 0.7
 
 ---
 
