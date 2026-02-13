@@ -1,9 +1,11 @@
 """
 제품 정보는 있지만 리뷰가 누락된 제품의 리뷰만 크롤링
+- BigQuery 적재 지원
 """
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import pandas as pd
 from selenium import webdriver
@@ -13,6 +15,13 @@ from webdriver_manager.chrome import ChromeDriverManager
 from daiso_beauty_crawler import crawl_product_detail
 from utils import setup_logger, get_date_string
 import time
+
+# BigQuery 모듈
+try:
+    from BigQuery.etl_loader import CrawlerETL
+    BIGQUERY_AVAILABLE = True
+except ImportError:
+    BIGQUERY_AVAILABLE = False
 
 # 로거 설정
 logger = setup_logger('missing_reviews', 'missing_reviews.log')
@@ -130,6 +139,19 @@ print(f"\n최종 통계:")
 print(f"   - 전체: {total_count}개")
 print(f"   - 성공: {success_count}개 ({success_rate:.1f}%)")
 print(f"   - 실패: {len(failed_products)}개 ({100-success_rate:.1f}%)")
+
+# BigQuery 적재
+if BIGQUERY_AVAILABLE and all_reviews:
+    print("\n" + "=" * 100)
+    bq_confirm = input("BigQuery에 적재하시겠습니까? (y/n): ").strip().lower()
+    if bq_confirm == 'y':
+        try:
+            print("BigQuery 적재 시작...")
+            etl = CrawlerETL()
+            etl.load_reviews(reviews_path)
+            print("BigQuery 적재 완료!")
+        except Exception as e:
+            print(f"BigQuery 적재 실패: {str(e)}")
 
 print("\n" + "=" * 100)
 print("완료!")
