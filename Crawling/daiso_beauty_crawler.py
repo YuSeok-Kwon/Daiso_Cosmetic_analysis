@@ -3,8 +3,10 @@
 - 제품 정보 (product_all.csv)
 - 리뷰 (reviews_all.csv)
 - 성분 (ingredients_all.csv)
+- BigQuery 적재 지원
 """
 import os
+import sys
 import time
 import re
 
@@ -29,6 +31,14 @@ from modules.ingredient_parser import (
     INGREDIENT_KEYWORDS
 )
 from utils import setup_logger, get_date_string
+
+# BigQuery 모듈 경로 추가
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+try:
+    from BigQuery.etl_loader import CrawlerETL
+    BIGQUERY_AVAILABLE = True
+except ImportError:
+    BIGQUERY_AVAILABLE = False
 
 # 로거 설정
 logger = setup_logger('daiso_beauty_crawler', 'daiso_beauty_crawler.log')
@@ -925,6 +935,32 @@ def main():
             df_ingredients.to_csv(ingredient_file, index=False, encoding='utf-8-sig')
             logger.info(f"성분 저장 완료: {ingredient_file} ({len(df_ingredients)}개)")
             print(f"성분: {ingredient_file} ({len(df_ingredients)}개)")
+
+        # BigQuery 적재
+        if BIGQUERY_AVAILABLE:
+            print(f"\n{'='*60}")
+            bq_confirm = input("BigQuery에 적재하시겠습니까? (y/n): ").strip().lower()
+            if bq_confirm == 'y':
+                try:
+                    print("\nBigQuery 적재 시작...")
+                    etl = CrawlerETL()
+
+                    if all_products and not minimal_mode:
+                        etl.load_products(product_file)
+                        logger.info(f"BigQuery 제품 적재 완료")
+
+                    if all_reviews:
+                        etl.load_reviews(review_file)
+                        logger.info(f"BigQuery 리뷰 적재 완료")
+
+                    if all_ingredients:
+                        etl.load_ingredients(ingredient_file)
+                        logger.info(f"BigQuery 성분 적재 완료")
+
+                    print("BigQuery 적재 완료!")
+                except Exception as e:
+                    logger.error(f"BigQuery 적재 실패: {str(e)}")
+                    print(f"BigQuery 적재 실패: {str(e)}")
 
         print(f"\n{'='*60}")
         print("크롤링 완료")
