@@ -234,3 +234,71 @@ class ABSALabeler:
         print(f"  Consistency rate: {consistency*100:.1f}%")
 
         print("="*60)
+
+
+def label_from_bigquery(
+    output_path: Path,
+    model: str = "gpt-4o-mini",
+    limit: int = None,
+    save_to_bq: bool = True,
+    save_csv: str = None,
+    resume: bool = True
+) -> pd.DataFrame:
+    """
+    BigQuery에서 리뷰를 로드하여 라벨링 후 결과 저장
+
+    Args:
+        output_path: 결과 JSONL 저장 경로
+        model: OpenAI 모델명
+        limit: 최대 라벨링 리뷰 수
+        save_to_bq: BigQuery에 결과 저장 여부
+        save_csv: CSV 저장 경로 (옵션)
+        resume: 이전 작업 이어서 진행 여부
+
+    Returns:
+        라벨링 결과 DataFrame
+    """
+    try:
+        from bq_connector import ABSABigQuery
+    except ImportError:
+        print("Error: bq_connector 모듈을 찾을 수 없습니다.")
+        return None
+
+    # BigQuery 연결
+    bq = ABSABigQuery()
+
+    # 미분석 리뷰 로드
+    print("BigQuery에서 미분석 리뷰 로드 중...")
+    df = bq.load_unanalyzed_reviews(limit=limit)
+
+    if len(df) == 0:
+        print("라벨링할 리뷰가 없습니다.")
+        return pd.DataFrame()
+
+    print(f"총 {len(df):,}개 리뷰 로드 완료")
+
+    # 임시 CSV 저장
+    temp_csv = output_path.parent / f"_temp_reviews_{output_path.stem}.csv"
+    df.to_csv(temp_csv, index=False, encoding='utf-8-sig')
+
+    # 라벨링 실행
+    labeler = ABSALabeler(model=model)
+    results_df = labeler.label_batch(temp_csv, output_path, resume=resume)
+
+    # 임시 파일 삭제
+    temp_csv.unlink(missing_ok=True)
+
+    # CSV 저장
+    if save_csv and len(results_df) > 0:
+        csv_path = Path(save_csv)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        results_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"\nCSV 저장: {csv_path} ({len(results_df):,}행)")
+
+    # BigQuery 저장
+    if save_to_bq and len(results_df) > 0:
+        print("\nBigQuery에 결과 저장 중...")
+        bq.update_review_analysis(results_df)
+        print("저장 완료!")
+
+    return results_df

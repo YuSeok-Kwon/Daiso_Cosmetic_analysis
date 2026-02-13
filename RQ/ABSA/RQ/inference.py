@@ -355,3 +355,94 @@ def run_inference_on_reviews(
     print("="*60)
 
     return results_df
+
+
+def run_inference_from_bigquery(
+    model_path: Path,
+    model_name: str = "beomi/KcELECTRA-base",
+    batch_size: int = 128,
+    aspect_threshold: float = 0.5,
+    limit: int = None,
+    save_to_bq: bool = True,
+    output_csv: Path = None
+) -> pd.DataFrame:
+    """
+    BigQuery에서 리뷰를 로드하여 추론 실행 후 결과 저장
+
+    Args:
+        model_path: 모델 체크포인트 경로
+        model_name: 사전학습 모델명
+        batch_size: 배치 크기
+        aspect_threshold: Aspect 임계값
+        limit: 최대 처리 리뷰 수
+        save_to_bq: BigQuery에 결과 저장 여부
+        output_csv: CSV 저장 경로 (옵션)
+
+    Returns:
+        분석 결과 DataFrame
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    try:
+        from bq_connector import ABSABigQuery
+    except ImportError:
+        print("Error: bq_connector 모듈을 찾을 수 없습니다.")
+        return None
+
+    from transformers import AutoTokenizer
+    from RQ_absa.model import load_model
+
+    # BigQuery 연결
+    bq = ABSABigQuery()
+
+    # 미분석 리뷰 로드
+    print("BigQuery에서 미분석 리뷰 로드 중...")
+    df = bq.load_unanalyzed_reviews(limit=limit)
+
+    if len(df) == 0:
+        print("분석할 리뷰가 없습니다.")
+        return pd.DataFrame()
+
+    print(f"총 {len(df):,}개 리뷰 로드 완료")
+
+    # 모델 로드
+    print("\n모델 로드 중...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = load_model(checkpoint_path=model_path, model_name=model_name)
+
+    # 추론 파이프라인 생성
+    inference = ABSAInference(
+        model=model,
+        tokenizer=tokenizer,
+        batch_size=batch_size,
+        aspect_threshold=aspect_threshold
+    )
+
+    # 추론 실행
+    print("\n추론 실행 중...")
+    results_df = inference.infer_dataframe(df)
+
+    # 통계 출력
+    print("\n" + "="*60)
+    print("INFERENCE STATISTICS")
+    print("="*60)
+    print("\nSentiment distribution:")
+    print(results_df['sentiment'].value_counts(normalize=True).sort_index())
+
+    # BigQuery 저장
+    if save_to_bq:
+        print("\nBigQuery에 결과 저장 중...")
+        bq.update_review_analysis(results_df)
+        print("저장 완료!")
+
+    # CSV 저장 (옵션)
+    if output_csv:
+        output_csv = Path(output_csv)
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        results_df.to_csv(output_csv, index=False, encoding='utf-8-sig')
+        print(f"CSV 저장: {output_csv}")
+
+    print("="*60)
+
+    return results_df
