@@ -28,6 +28,10 @@ chromedriver*
 # 환경 변수
 .env
 
+# GCP 서비스 계정 키
+*-*-*.json
+BigQuery/*.json
+
 # 스크린샷
 *.png
 *.jpg
