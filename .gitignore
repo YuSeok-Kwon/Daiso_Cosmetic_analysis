@@ -2,6 +2,7 @@
 data/
 *.csv
 *.json
+*.xlsx
 
 # 예외: Data 디렉토리의 ERD 문서는 추적
 !Data/
