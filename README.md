@@ -117,25 +117,15 @@ Why-pi/
 │   ├── config.py               # 카테고리 설정
 │   ├── modules/                # 재사용 모듈 (OCR, 성분 분석 등)
 │   ├── scripts/                # 유틸리티 스크립트
-│   │   ├── crawl_missing_products.py   # 누락 제품 크롤링
-│   │   ├── crawl_missing_reviews.py    # 누락 리뷰 크롤링
-│   │   ├── ingredient_rules_v1.py      # 성분명 정리 규칙 (1차)
-│   │   ├── ingredient_rules_v2.py      # 성분명 정리 규칙 (2차)
-│   │   ├── ingredient_rules_v3.py      # 성분명 정리 규칙 (3차)
-│   │   ├── ingredient_rules_final.py   # 성분명 정리 규칙 (통합)
-│   │   ├── merge_ingredient_csv.py     # 성분 CSV 병합
-│   │   ├── merge_csv_to_parquet.py     # Parquet 변환
-│   │   └── add_missing_ingredients.py  # 누락 성분 추가
 │   └── tests/                  # 테스트 파일
 │
 ├── RQ/                         # 리서치 질문 분석
 │   ├── RQ1_재구매_핵심속성_분석.ipynb
 │   ├── RQ2_저가_듀프_시장_분석.ipynb
 │   ├── ABSA/                   # Aspect-Based Sentiment Analysis
-│   │   ├── RQ/                 # ABSA 모델 코드
-│   │   ├── scripts/            # ABSA 스크립트
-│   │   ├── data/               # 학습 데이터
-│   │   └── models/             # 모델 체크포인트
+│   │   ├── data/               # 학습 데이터 (raw, processed, batch)
+│   │   ├── models/             # 모델 체크포인트
+│   │   └── docs/               # ABSA 파이프라인 문서
 │   ├── results_RQ1/            # RQ1 분석 결과
 │   ├── results_RQ2/            # RQ2 분석 결과
 │   └── utils/                  # 유틸리티 함수
@@ -150,10 +140,14 @@ Why-pi/
 ├── Visualization/              # 시각화 결과
 │
 ├── docs/                       # 문서
-│   ├── ingredients/            # 성분명 정리 규칙 문서
-│   ├── Story/                  # 스토리텔링 자료
-│   ├── planning/               # 기획 문서
-│   └── pdf/                    # PDF 자료
+│   ├── ABSA/                   # ABSA 파이프라인, 워크플로우
+│   ├── analysis/               # 논문 정리
+│   ├── crawling/               # 크롤링 시스템 설명서, 성분명 정리 규칙
+│   ├── daiso/                  # 다이소 시장분석 리포트
+│   ├── data/                   # 데이터 명세서, 파생변수
+│   ├── foreigner/              # 서울시 외국인 밀집지역 분석
+│   ├── pdf/                    # PDF 자료
+│   └── story/                  # 스토리텔링 자료
 │
 └── logs/                       # 로그 파일
 ```
@@ -184,7 +178,7 @@ Why-pi/
 
 #### 2. 성분 파싱 고도화
 
-- OCR 오인식 자동 교정 (소톱 -> 소듐, 글라이골 -> 글라이콜 등)
+- OCR 오인식 자동 교정 (소톱 → 소듐, 글라이골 → 글라이콜 등)
 - 화학 성분 패턴 매칭 (에톡실레이트, 효소, 아미노산염 등)
 - 500+ 성분 데이터베이스 매칭
 - 농도/함량 괄호 자동 제거 (%, ppm, mg/kg 등)
@@ -203,143 +197,61 @@ Why-pi/
 
 ---
 
-## 사용 방법
+## 데이터 구조 (ERD)
 
-### 1. 환경 설정
-
-```bash
-cd Crawling
-
-# 의존성 설치
-pip install -r requirements.txt
-
-# 환경 변수 설정
-cp .env.example .env
-# .env 파일에 API 키 입력
 ```
+┌─────────────┐       ┌─────────────┐       ┌─────────────────────┐
+│   brands    │       │ categories  │       │  ingredients_master │
+│─────────────│       │─────────────│       │─────────────────────│
+│ brand_id PK │       │category_id PK│      │ ingredient_id PK    │
+│ name        │       │category_home │      │ name                │
+└──────┬──────┘       │category_1    │      │ ewg_grade           │
+       │              │category_2    │      │ is_caution          │
+       │              └──────┬───────┘      └──────────┬──────────┘
+       │                     │                         │
+       ▼                     ▼                         │
+┌──────────────────────────────────────┐               │
+│              products                │               │
+│──────────────────────────────────────│               │
+│ product_code PK                      │               │
+│ brand_id FK → brands                 │               │
+│ category_id FK → categories          │               │
+│ name, price, country, created_at     │               │
+└──────────────────┬───────────────────┘               │
+                   │                                   │
+       ┌───────────┼───────────┬───────────┐           │
+       ▼           ▼           ▼           ▼           │
+┌────────────┐┌────────────┐┌────────────┐┌─────────── ┴──┐
+│ product_   ││ product_   ││ product_   ││ product_      │
+│ attributes ││ metrics    ││ ingredients││ ingredients   │
+│────────────││────────────││────────────││───────────────│
+│product_code││product_code││product_code││ingredient_id  │
+│group       ││likes       ││ingredient_ ││  FK→ingredients│
+│is_function ││shares      ││  id FK     ││  _master      │
+│price_tier  ││review_count││rank        │└───────────────┘
+│...         ││...         │└────────────┘
+└────────────┘└────────────┘
 
-`.env` 파일:
-
-```env
-# Naver Clova OCR API
-CLOVA_OCR_URL=https://...
-CLOVA_OCR_SECRET=your-secret-key
+┌─────────────┐       ┌─────────────────┐
+│    users    │       │ review_analysis │
+│─────────────│       │─────────────────│
+│ user_id PK  │       │ order_id FK     │
+│ user_masked │       │ sentiment       │
+│activity_level│      │ sentiment_score │
+│rating_tendency│     │ promo_type      │
+└──────┬──────┘       └────────┬────────┘
+       │                       │
+       ▼                       ▼
+┌───────────────────────────────────────┐
+│              reviews                  │
+│───────────────────────────────────────│
+│ order_id PK                           │
+│ product_code FK → products            │
+│ user_id FK → users                    │
+│ write_date, rating, text, image_count │
+│ is_reorder                            │
+└───────────────────────────────────────┘
 ```
-
-### 2. 메인 크롤러 실행
-
-```bash
-cd Crawling
-python daiso_beauty_crawler.py
-```
-
-크롤링 옵션:
-
-1. 제품 정보만
-2. 제품 정보 + 리뷰
-3. 제품 코드 + 성분만
-4. 제품 코드 + 리뷰만
-5. 전체 (제품 정보 + 리뷰 + 성분)
-
-### 3. 누락 데이터 크롤링
-
-```bash
-cd Crawling
-
-# 제품 정보 누락
-python scripts/crawl_missing_products.py
-
-# 리뷰 누락
-python scripts/crawl_missing_reviews.py
-```
-
-### 4. 성분명 정리 규칙 적용
-
-```bash
-cd Crawling
-
-# 1차 → 2차 → 3차 → 통합 순서로 적용
-python scripts/ingredient_rules_v1.py
-python scripts/ingredient_rules_v2.py
-python scripts/ingredient_rules_v3.py
-python scripts/ingredient_rules_final.py
-```
-
-### 5. 성분 감지 테스트
-
-```bash
-cd Crawling
-python tests/test_ingredient_detection.py
-```
-
----
-
-## 출력 데이터
-
-### 제품 정보
-
-| 필드         | 설명                |
-| ------------ | ------------------- |
-| product_code | 제품 코드           |
-| name         | 제품명              |
-| price        | 가격                |
-| brand        | 브랜드              |
-| country      | 원산지              |
-| can_halal    | 할랄 인증 가능 여부 |
-| can_vegan    | 비건 인증 가능 여부 |
-| likes        | 좋아요 수           |
-| shares       | 공유 수             |
-
-### 리뷰
-
-| 필드         | 설명           |
-| ------------ | -------------- |
-| product_code | 제품 코드      |
-| date         | 리뷰 작성일    |
-| rating       | 평점           |
-| text         | 리뷰 내용      |
-| user_id      | 사용자 ID      |
-| image_count  | 첨부 이미지 수 |
-
-### 성분
-
-| 필드         | 설명                    |
-| ------------ | ----------------------- |
-| product_code | 제품 코드               |
-| ingredient   | 성분명                  |
-| confidence   | 신뢰도 (0.0 ~ 1.0)      |
-| source       | 추출 소스 (ALT, OCR 등) |
-| is_vegan     | 비건 여부               |
-| is_halal     | 할랄 여부               |
-
----
-
-## 모듈 설명
-
-### Crawling 모듈
-
-| 모듈                          | 설명                                    |
-| ----------------------------- | --------------------------------------- |
-| `clova_ocr.py`                | 네이버 Clova OCR API 클라이언트         |
-| `ingredient_detector.py`      | OpenCV 기반 성분표 영역 자동 감지       |
-| `ingredient_parser.py`        | 성분 파싱 및 유효성 검증 (500+ 성분 DB) |
-| `ingredient_postprocessor.py` | 정규표현식 + 사전 기반 성분 정제        |
-| `halal_vegan_api.py`          | 할랄/비건 성분 분석                     |
-| `halal_vegan_checker.py`      | 할랄/비건 인증 가능 여부 판정           |
-| `certification_api.py`        | 외부 인증 API 연동                      |
-| `ocr_utils_split.py`          | OCR 통합 유틸리티 (분할 OCR 지원)       |
-
-### 성분명 정리 스크립트
-
-| 스크립트                    | 설명                                  |
-| --------------------------- | ------------------------------------- |
-| `ingredient_rules_v1.py`    | 1차 규칙 - 기본 삭제/수정/분리 규칙   |
-| `ingredient_rules_v2.py`    | 2차 규칙 - 세부 교정 사항 추가        |
-| `ingredient_rules_v3.py`    | 3차 규칙 - 추측 복원 및 OCR 오류 교정 |
-| `ingredient_rules_final.py` | 통합 규칙 - 최종 정리                 |
-| `merge_ingredient_csv.py`   | 성분 CSV 파일 병합                    |
-
-> 상세 규칙은 `docs/ingredients/성분명 정리 규칙.md` 참조
 
 ---
 
@@ -347,48 +259,115 @@ python tests/test_ingredient_detection.py
 
 리뷰 데이터에서 속성별 감성을 분석하는 시스템
 
-### 구조
+### 파이프라인 흐름
 
 ```
-RQ/ABSA/
-├── RQ/                     # 핵심 모델 코드
-│   ├── config.py           # 설정
-│   ├── dataset.py          # 데이터셋 처리
-│   ├── model.py            # 모델 정의
-│   ├── train.py            # 학습
-│   ├── inference.py        # 추론
-│   └── evaluation.py       # 평가
-├── scripts/                # 분석 스크립트
-├── data/                   # 학습 데이터
-│   ├── raw/                # 원본 데이터
-│   └── processed/          # 전처리된 데이터
-└── models/                 # 학습된 모델
+[1] 층화 샘플링 (20,000개)
+       ↓
+[2] GPT-4o-mini 1차 라벨링
+       ↓
+[3] 사람 직접 검증 → 오류 패턴 파악
+       ↓
+[4] 프롬프트 재수정
+       ↓
+[5] GPT-4o vs GPT-4o-mini 비교
+       ↓
+[6] GPT-4o Batch API로 20,000개 라벨링
+       ↓
+[7] 사람 직접 검수 (샘플링)
+       ↓
+[8] 모델 선별 (KoELECTRA 추천)
+       ↓
+[9] 전체 리뷰 적용 (300,000개)
+       ↓
+[10] 연착륙 상품 분석
 ```
 
-### 주요 기능
+### Aspect 카테고리 (11개)
 
-- 리뷰에서 속성(Aspect) 추출
-- 속성별 감성(Sentiment) 분류
-- 긍정/부정 요인 분석
+| 카테고리    | 설명                     |
+| ----------- | ------------------------ |
+| 배송/포장   | 배송 속도, 포장 상태     |
+| 품질/퀄리티 | 제품 퀄리티, 제조 결함   |
+| 가격/가성비 | 가격 만족도, 가성비 평가 |
+| 사용감/성능 | 발림성, 지속력, 커버력   |
+| 용량/휴대   | 용량 만족도, 휴대성      |
+| 디자인      | 외관, 패키지 디자인      |
+| 재질/냄새   | 텍스처, 향               |
+| CS/응대     | 고객 서비스              |
+| 재구매      | 재구매 의사              |
+| 색상/발색   | 발색력, 색상 만족도      |
+| 미분류      | 분류 불가                |
+
+### 비용 요약
+
+| 단계            | 모델         | 데이터 수 | 비용           |
+| --------------- | ------------ | --------- | -------------- |
+| GPT-4o-mini 1차 | GPT-4o-mini  | 20,000    | $2.87          |
+| Golden Set 비교 | GPT-4o       | 430       | ~$0.50         |
+| Batch 라벨링    | GPT-4o Batch | 20,000    | $45.70         |
+| ML 추론         | KoELECTRA    | 300,000   | $0             |
+| **총합**  |              |           | **~$50** |
 
 ---
 
-## 참고사항
+## 파생변수
 
-- 크롤링 속도: 제품마다 상이 (리뷰 개수에 따라 편차)
-- 로그 파일: `Crawling/logs/` 폴더에 자동 저장
-- 캐시: `Crawling/cache/` 폴더 (EasyOCR 모델 등)
-- 결과: `Data/csv/` 폴더에 CSV/Parquet 저장
+### Products 파생변수
+
+| 변수명               | 설명                                            | 활용             |
+| -------------------- | ----------------------------------------------- | ---------------- |
+| `engagement_score` | 0.15×likes + 0.30×shares + 0.55×review_count | 제품 인기도 평가 |
+| `price_tier`       | Easy Pick / Standard / Premium                  | 가격대별 전략    |
+| `cp_index`         | engagement_score / (price + 1)                  | 가성비 지표      |
+| `is_god_sung_bi`   | cp_index 상위 20%                               | 갓성비 아이템    |
+| `review_density`   | review_count / days_since_first_review          | 지속적 인기도    |
+
+### Reviews 파생변수
+
+| 변수명                  | 설명                      | 활용          |
+| ----------------------- | ------------------------- | ------------- |
+| `is_reorder`          | 리뷰가 '재구매'로 시작    | 재구매율 분석 |
+| `user_activity_level` | Newbie/Junior/Regular/VIP | 사용자 세분화 |
+| `is_brand_repurchase` | 동일 브랜드 재구매 여부   | 브랜드 충성도 |
+| `season`              | Spring/Summer/Fall/Winter | 계절별 분석   |
+| `promo_type_category` | 구매이벤트/리뷰이벤트     | 프로모션 효과 |
+
+---
+
+## 외국인 밀집지역 분석
+
+### 분석 방법
+
+| 방법                  | 계산식                             | 용도           |
+| --------------------- | ---------------------------------- | -------------- |
+| **평균 스냅샷** | Σ(10~22시 외국인) / 13시간 / 일수 | 구별 순위 비교 |
+| **Person-Hour** | Σ(10~22시 외국인) / 일수          | 체류 가치 분석 |
+| **복합점수**    | 외국인_정규화 + 유동량_정규화      | 투자 우선순위  |
+
+### 구별 우선순위
+
+| 자치구              | 특징                        | 전략               |
+| ------------------- | --------------------------- | ------------------ |
+| **중구**      | 명동, 관광 중심, 외국인 1위 | 다국어 서비스 필수 |
+| **강남구**    | 쇼핑, 비즈니스              | 프리미엄 라인업    |
+| **용산구**    | 이태원, 다문화              | 다양한 언어 대응   |
+| **구로/금천** | 중국인 밀집                 | 중국어 전용 매대   |
+
+---
 
 ## 문서
 
-| 문서 경로                              | 설명                    |
-| -------------------------------------- | ----------------------- |
-| `docs/ingredients/성분명 정리 규칙.md` | 성분명 정리 규칙 상세   |
-| `docs/ABSA 구조 정리.md`               | ABSA 시스템 구조 설명   |
-| `docs/크롤링 시스템 설명서.md`         | 크롤링 시스템 상세 설명 |
-| `docs/다이소화장품 시장분석 리포트.md` | 시장 분석 리포트        |
-| `docs/파생변수.md`                     | 파생변수 정의           |
+| 문서 경로                                                            | 설명                         |
+| -------------------------------------------------------------------- | ---------------------------- |
+| `docs/ABSA/ABSA_파이프라인.md`                                     | ABSA 10단계 파이프라인 상세  |
+| `docs/ABSA/워크플로우.md`                                          | ABSA 라벨링 수정 전략        |
+| `docs/crawling/크롤링 시스템 설명서.md`                            | 크롤링 시스템 상세 설명      |
+| `docs/crawling/성분명 정리 규칙.md`                                | OCR 교정 및 성분명 정리 규칙 |
+| `docs/daiso/다이소화장품 시장분석 리포트.md`                       | 시장 분석 리포트             |
+| `docs/data/데이터 명세서.md`                                       | ERD 및 테이블 상세 명세      |
+| `docs/data/파생변수.md`                                            | 파생변수 정의 및 활용        |
+| `docs/foreigner/서울시 외국인 밀집지역 분석 - 계산 로직 설명서.md` | 외국인 분석 로직             |
 
 ---
 
@@ -396,3 +375,5 @@ RQ/ABSA/
 
 - [2025 외국인 관광객 통계 현황](https://www.lemonlab.pro/2025-%EC%99%B8%EA%B5%AD%EC%9D%B8-%EA%B4%80%EA%B4%91%EA%B0%9D-%ED%86%B5%EA%B3%84-%ED%98%84%ED%99%A9/)
 - [K-Beauty 2026 글로벌 트렌드 및 외국인 선호도](https://kessence.kr/k-beauty-2026-global-trends-foreign-preferences/)
+- 서울 열린데이터광장 생활인구 데이터
+- S-DoT 유동인구 데이터
