@@ -96,11 +96,17 @@ class ABSALabeler:
                     continue
 
                 try:
-                    # Label review
+                    # Label review (name, category 정보 전달)
+                    name = row.get('name', '') if 'name' in df.columns else ''
+                    category_1 = row.get('category_1', '') if 'category_1' in df.columns else ''
+                    category_2 = row.get('category_2', '') if 'category_2' in df.columns else ''
                     result = self.client.label_review(
                         review_text=row['text'],
                         product_code=row['product_code'],
                         rating=row['rating'],
+                        name=name,
+                        category_1=category_1,
+                        category_2=category_2,
                         model=self.model
                     )
 
