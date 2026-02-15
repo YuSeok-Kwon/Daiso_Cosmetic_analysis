@@ -18,7 +18,7 @@ import time
 
 # BigQuery 모듈
 try:
-    from BigQuery.etl_loader import CrawlerETL
+    from bigquery.etl_loader import CrawlerETL
     BIGQUERY_AVAILABLE = True
 except ImportError:
     BIGQUERY_AVAILABLE = False

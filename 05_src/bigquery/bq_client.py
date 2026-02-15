@@ -19,8 +19,8 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Optional
 
-# 설정
-KEY_PATH = Path(__file__).parent / "daiso-analysis-4d05c813a295.json"
+# 설정 (config 폴더에서 키 파일 로드)
+KEY_PATH = Path(__file__).parent.parent.parent / "config" / "daiso-analysis-4d05c813a295.json"
 DEFAULT_DATASET = "daiso"
 
 # 테이블별 Primary Key 매핑

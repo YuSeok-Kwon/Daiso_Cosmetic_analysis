@@ -19,11 +19,11 @@ from pathlib import Path
 import pandas as pd
 from typing import Optional, List
 
-# BigQuery 모듈 경로 추가
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# BigQuery 모듈 경로 추가 (05_src 폴더)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "05_src"))
 
 try:
-    from BigQuery.bq_client import (
+    from bigquery.bq_client import (
         get_client, query_to_df, upsert_df, get_table_count, DEFAULT_DATASET
     )
     BIGQUERY_AVAILABLE = True

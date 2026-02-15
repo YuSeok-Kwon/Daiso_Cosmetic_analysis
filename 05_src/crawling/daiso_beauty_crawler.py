@@ -11,7 +11,8 @@ import time
 import re
 
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+# config 폴더에서 .env 로드
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', 'config', '.env'))
 import pandas as pd
 from collections import defaultdict
 from selenium import webdriver
@@ -35,7 +36,7 @@ from utils import setup_logger, get_date_string
 # BigQuery 모듈 경로 추가
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
-    from BigQuery.etl_loader import CrawlerETL
+    from bigquery.etl_loader import CrawlerETL
     BIGQUERY_AVAILABLE = True
 except ImportError:
     BIGQUERY_AVAILABLE = False
