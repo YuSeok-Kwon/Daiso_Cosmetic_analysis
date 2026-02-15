@@ -20,7 +20,8 @@ import pandas as pd
 from typing import Optional, List
 
 # BigQuery 모듈 경로 추가 (05_src 폴더)
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "05_src"))
+# 06_analysis/03_ABSA/ → 06_analysis/ → Why-pi/ → 05_src/
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "05_src"))
 
 try:
     from bigquery.bq_client import (
