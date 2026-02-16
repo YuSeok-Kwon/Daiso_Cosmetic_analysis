@@ -159,8 +159,7 @@ class CrawlerETL:
             new_data.append({
                 "ingredient_id": new_id,
                 "name": name,
-                "ewg_grade": None,
-                "is_caution": None
+                "is_caution": False
             })
             ing_map[name] = new_id
 
