@@ -24,7 +24,6 @@ CREATE TABLE categories (
 CREATE TABLE ingredients_master (
     ingredient_id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    ewg_grade VARCHAR(10),
     is_caution BOOLEAN DEFAULT FALSE,
     is_haram BOOLEAN DEFAULT FALSE,
     is_animal_derived BOOLEAN DEFAULT FALSE

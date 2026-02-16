@@ -205,8 +205,8 @@ Why-pi/
 │─────────────│       │─────────────│       │─────────────────────│
 │ brand_id PK │       │category_id PK│      │ ingredient_id PK    │
 │ name        │       │category_home │      │ name                │
-└──────┬──────┘       │category_1    │      │ ewg_grade           │
-       │              │category_2    │      │ is_caution          │
+└──────┬──────┘       │category_1    │      │ is_caution          │
+       │              │category_2    │      │                     │
        │              └──────┬───────┘      └──────────┬──────────┘
        │                     │                         │
        ▼                     ▼                         │
