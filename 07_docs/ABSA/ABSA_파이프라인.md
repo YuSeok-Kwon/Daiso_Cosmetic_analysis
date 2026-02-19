@@ -84,7 +84,7 @@
 | 4점 | 1,502 | 7.5% |
 | 5점 | 8,804 | 44.0% |
 
-**결과:** `data/raw/sampled_reviews_20k.csv`
+**결과:** `06_analysis/03_ABSA/01_raw_data/sampled_reviews_20k.csv`
 
 ---
 
@@ -184,7 +184,7 @@
 
 ### 6단계: GPT-4o Batch API로 20,000개 라벨링 ✅
 
-**현재 상태:** 진행 중 (병렬 처리)
+**현재 상태:** 완료
 
 **설정:**
 - 모델: `gpt-4o`
@@ -199,9 +199,7 @@
 | **총합** | **20,000개** | **$95.70** |
 
 **출력 파일:**
-- `data/batch/worker1_results.csv`
-- `data/batch/worker2_results.csv`
-- `data/batch/pipeline_results_partial.csv`
+- `06_analysis/03_ABSA/02_processed_data/interim/v2/absa_results_final.csv`
 
 ---
 
@@ -362,23 +360,27 @@
 ## 파일 구조
 
 ```
-ABSA/
-├── data/
-│   ├── raw/
-│   │   └── sampled_reviews_20k.csv      # 샘플링 데이터
-│   ├── processed/
-│   │   └── golden_set.xlsx              # Golden Set (430개)
-│   └── batch/
-│       ├── worker1_results.csv          # Worker 1 결과
-│       ├── worker2_results.csv          # Worker 2 결과
-│       └── pipeline_results_partial.csv # 누적 결과
-├── openai_client.py                     # OpenAI API 클라이언트
-├── batch_labeling.py                    # Batch API 라벨링
-├── run_batch_pipeline.py                # 배치 파이프라인
-├── run_parallel_batch.py                # 병렬 배치 처리
-├── evaluate_model.py                    # 모델 평가
-└── docs/
-    └── ABSA_Pipeline_Documentation.md   # 이 문서
+06_analysis/03_ABSA/
+├── 01_raw_data/
+│   ├── sampled_reviews_20k.csv          # 샘플링 데이터
+│   └── sampled_reviews_part_*.csv       # 팀별 분할 데이터
+├── 02_processed_data/
+│   ├── interim/
+│   │   ├── v1/                          # 팀별 3단계 라벨링 결과
+│   │   │   ├── step1_team*_bulk_labels.csv
+│   │   │   ├── step2_team*_reviewed_labels.csv
+│   │   │   └── step3_team*_gold_set.csv
+│   │   └── v2/
+│   │       └── absa_results_final.csv   # GPT-4o Batch 최종 결과
+│   ├── final/                           # 최종 데이터
+│   └── validation/                      # 검증 데이터
+├── 03_notebooks/                        # 분석 노트북
+├── 05_src/                              # 소스 코드
+├── 06_models/                           # 모델 체크포인트
+├── 07_scripts/                          # 실행 스크립트
+├── config/                              # 설정 파일
+├── docs/                                # 문서
+└── logs/                                # 로그
 ```
 
 ---
@@ -400,8 +402,8 @@ ABSA/
 
 ## 다음 단계
 
-1. [ ] 배치 작업 완료 대기
-2. [ ] 결과 파일 병합
+1. [x] 배치 작업 완료
+2. [x] 결과 파일 병합
 3. [ ] 샘플 검수 (100~200개)
 4. [ ] ML 모델 학습 (KoELECTRA 추천)
 5. [ ] 전체 데이터 적용

@@ -1,5 +1,8 @@
 # ABSA 팀 분석 가이드
 
+> **참고:** 이 문서는 ABSA 1차 팀별 라벨링 작업 시 배포된 가이드입니다. 팀별 작업은 완료되었으며, 현재는 아카이브 용도로 보관합니다.
+> 현재 ABSA 디렉토리: `06_analysis/03_ABSA/`
+
 ### 분석 대상 Aspect (10개)
 
 | Aspect      | 설명                   |
@@ -79,7 +82,7 @@ export OPENAI_API_KEY=sk-your-api-key-here
 
 ### 프로젝트 폴더로 이동
 
-ABSA 폴더를 **바탕화면**에 저장 후 이동합니다.
+ABSA 폴더로 이동합니다. (현재 프로젝트 내 경로: `06_analysis/03_ABSA/`)
 
 **Windows**
 
@@ -91,6 +94,8 @@ cd %USERPROFILE%\Desktop\ABSA
 
 ```bash
 cd ~/Desktop/ABSA
+# 또는 프로젝트 내 경로:
+# cd /path/to/Why-pi/06_analysis/03_ABSA
 ```
 
 ### 전체 3단계 실행 (권장)
@@ -129,10 +134,10 @@ python scripts/absa_3step_analysis.py --team 1 --gold-size 50
 
 ## 출력 파일
 
-실행 완료 후 `data/processed/` 폴더에 결과가 저장됩니다:
+실행 완료 후 `02_processed_data/interim/v1/` 폴더에 결과가 저장됩니다:
 
 ```
-data/processed/
+02_processed_data/interim/v1/
 ├── step1_team1_bulk_labels.csv      # 1단계 결과
 ├── step2_team1_reviewed_labels.csv  # 2단계 결과 (최종 라벨)
 └── step3_team1_gold_set.csv         # 3단계 골드셋
@@ -216,25 +221,19 @@ PowerShell에서 한글이 깨지는 경우:
 ## 폴더 구조
 
 ```
-ABSA/
-├── scripts/
+06_analysis/03_ABSA/
+├── 07_scripts/
 │   ├── split_data.py              # 데이터 분할 스크립트
 │   └── absa_3step_analysis.py     # 3단계 분석 스크립트
 │
-├── data/
-│   ├── raw/
-│   │   ├── sampled_reviews_20k.csv  # 원본 데이터
-│   │   └── split/
-│   │       ├── team_1.csv
-│   │       ├── team_2.csv
-│   │       ├── team_3.csv
-│   │       ├── team_4.csv
-│   │       ├── team_5.csv
-│   │       └── team_6.csv
-│   │
-│   └── processed/                  # 결과 저장 위치
+├── 01_raw_data/
+│   ├── sampled_reviews_20k.csv    # 원본 데이터
+│   └── sampled_reviews_part_*.csv # 팀별 분할 데이터
 │
-└── TEAM_GUIDE.md                   # 이 가이드
+├── 02_processed_data/
+│   └── interim/v1/                # 팀별 결과 저장 위치
+│
+└── docs/                          # 문서
 ```
 
 ---
