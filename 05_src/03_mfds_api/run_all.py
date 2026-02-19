@@ -11,6 +11,7 @@
     python 05_src/03_mfds_api/run_all.py --target functional
     python 05_src/03_mfds_api/run_all.py --target ingredient
     python 05_src/03_mfds_api/run_all.py --target restricted
+    python 05_src/03_mfds_api/run_all.py --target entp
 
     # 단건 테스트
     python 05_src/03_mfds_api/run_all.py --test
@@ -20,13 +21,28 @@ import argparse
 import sys
 from pathlib import Path
 
-# 프로젝트 루트 및 모듈 경로 설정
+# 패키지 컨텍스트 설정 후 import
 _THIS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_THIS_DIR))
 
-from functional_cosmetics import FunctionalCosmeticsAPI
-from ingredient_info import IngredientInfoAPI
-from restricted_ingredients import RestrictedIngredientsAPI
+import importlib, importlib.util
+
+def _setup_package():
+    """상대 import 지원을 위한 패키지 컨텍스트 설정"""
+    pkg_name = "mfds_api"
+    spec = importlib.util.spec_from_file_location(
+        pkg_name,
+        _THIS_DIR / "__init__.py",
+        submodule_search_locations=[str(_THIS_DIR)],
+    )
+    pkg = importlib.util.module_from_spec(spec)
+    sys.modules[pkg_name] = pkg
+    spec.loader.exec_module(pkg)
+    return pkg
+
+_pkg = _setup_package()
+FunctionalCosmeticsAPI = _pkg.FunctionalCosmeticsAPI
+IngredientInfoAPI = _pkg.IngredientInfoAPI
+RestrictedIngredientsAPI = _pkg.RestrictedIngredientsAPI
 
 
 def run_functional():
@@ -61,6 +77,18 @@ def run_restricted():
 
     api = RestrictedIngredientsAPI()
     df = api.match_ingredients()
+    api.save_results(df)
+    return df
+
+
+def run_entp():
+    """제조사(ENTP_NAME) 기반 매칭"""
+    print("=" * 60)
+    print("[ENTP] 제조사명 기반 기능성화장품 매칭")
+    print("=" * 60)
+
+    api = FunctionalCosmeticsAPI()
+    df = api.match_all_by_entp()
     api.save_results(df)
     return df
 
@@ -106,7 +134,7 @@ def main():
     parser = argparse.ArgumentParser(description="MFDS API 데이터 수집")
     parser.add_argument(
         "--target",
-        choices=["functional", "ingredient", "restricted", "all"],
+        choices=["functional", "ingredient", "restricted", "entp", "all"],
         default="all",
         help="실행 대상 (기본: all)",
     )
@@ -125,6 +153,9 @@ def main():
 
     if args.target in ("restricted", "all"):
         run_restricted()
+
+    if args.target == "entp":
+        run_entp()
 
     print("\n" + "=" * 60)
     print("전체 완료!")
