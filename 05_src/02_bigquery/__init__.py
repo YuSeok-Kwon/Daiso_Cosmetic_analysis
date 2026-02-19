@@ -28,7 +28,7 @@ from .bq_client import (
     DEFAULT_DATASET,
     TABLE_KEYS,
 )
-from .etl_loader import CrawlerETL, load_crawler_data
+from .etl_loader import CrawlerETL, CrawlerETLv2, load_crawler_data
 
 __all__ = [
     # 클라이언트
@@ -46,5 +46,6 @@ __all__ = [
     "TABLE_KEYS",
     # ETL
     "CrawlerETL",
+    "CrawlerETLv2",
     "load_crawler_data",
 ]

@@ -977,5 +977,126 @@ def main():
         logger.info("브라우저 종료 완료")
 
 
+def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True):
+    """비대화형 모드: 전체 카테고리 크롤링 (파이프라인용)
+
+    전체 뷰티 카테고리를 자동으로 크롤링하고 CSV를 저장한다.
+    main()의 대화형 input() 없이 실행 가능.
+
+    Parameters
+    ----------
+    crawl_reviews : 리뷰 크롤링 여부
+    crawl_ingredients : 성분 크롤링 여부
+    headless : 헤드리스 모드 (True=브라우저 숨김)
+
+    Returns
+    -------
+    (products_csv_path, reviews_csv_path, ingredients_csv_path)
+    경로가 없으면 해당 위치에 None
+    """
+    # 전체 카테고리 조합 생성
+    categories = []
+    for middle_name, info in DAISO_BEAUTY_CATEGORIES.items():
+        middle_code = info["중분류코드"]
+        for small_code, small_name in info["소분류"].items():
+            categories.append((middle_name, middle_code, small_code, small_name))
+
+    logger.info(f"run_all 시작: {len(categories)}개 카테고리, reviews={crawl_reviews}, ingredients={crawl_ingredients}")
+
+    # 드라이버 설정
+    options = webdriver.ChromeOptions()
+    if headless:
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    all_products = []
+    all_reviews = []
+    all_ingredients = []
+    seen_product_codes = set()
+
+    try:
+        for middle, middle_code, small_code, small_name in categories:
+            logger.info(f"{'='*60}")
+            logger.info(f"카테고리: {middle} > {small_name}")
+
+            category_url = get_category_url(middle_code, small_code)
+            links = get_all_product_links(driver, category_url, small_name)
+
+            for idx, link in enumerate(links, 1):
+                try:
+                    pdno_match = re.search(r"pdNo=([A-Z0-9]+)", link)
+                    pdno_preview = pdno_match.group(1) if pdno_match else "알수없음"
+                    logger.info(f"[{idx}/{len(links)}] pdNo: {pdno_preview}")
+
+                    product, reviews, ingredients = crawl_product_detail(
+                        driver, link,
+                        category_home="뷰티/위생",
+                        category_1=middle,
+                        category_2=small_name,
+                        crawl_reviews=crawl_reviews,
+                        crawl_ingredients=crawl_ingredients,
+                    )
+
+                    if product:
+                        if product["product_code"] in seen_product_codes:
+                            logger.warning(f"중복 스킵: {product['product_code']}")
+                            continue
+
+                        seen_product_codes.add(product["product_code"])
+                        all_products.append(product)
+                        all_reviews.extend(reviews)
+                        all_ingredients.extend(ingredients)
+
+                        logger.info(
+                            f"완료: [{product['name'][:40]}] | "
+                            f"리뷰: {len(reviews)}개 | 성분: {len(ingredients)}개"
+                        )
+
+                    time.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"크롤링 실패: {link} — {e}")
+                    continue
+
+        # CSV 저장
+        date_str = get_date_string()
+        os.makedirs("data", exist_ok=True)
+
+        product_file = None
+        review_file = None
+        ingredient_file = None
+
+        if all_products:
+            product_file = f"data/products_all_{date_str}.csv"
+            pd.DataFrame(all_products).to_csv(product_file, index=False, encoding="utf-8-sig")
+            logger.info(f"제품 저장: {product_file} ({len(all_products)}개)")
+
+        if all_reviews:
+            review_file = f"data/reviews_all_{date_str}.csv"
+            pd.DataFrame(all_reviews).to_csv(review_file, index=False, encoding="utf-8-sig")
+            logger.info(f"리뷰 저장: {review_file} ({len(all_reviews)}개)")
+
+        if all_ingredients:
+            ingredient_file = f"data/ingredients_all_{date_str}.csv"
+            pd.DataFrame(all_ingredients).to_csv(ingredient_file, index=False, encoding="utf-8-sig")
+            logger.info(f"성분 저장: {ingredient_file} ({len(all_ingredients)}개)")
+
+        logger.info("run_all 완료")
+        return product_file, review_file, ingredient_file
+
+    except Exception as e:
+        logger.error(f"run_all 오류: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
+
+    finally:
+        driver.quit()
+        logger.info("브라우저 종료 완료")
+
+
 if __name__ == "__main__":
     main()

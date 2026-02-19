@@ -396,6 +396,81 @@ def load_crawler_data(
     return etl.load_all(products_csv, reviews_csv, ingredients_csv, category_id)
 
 
+# ========== ERD v2 ETL ==========
+
+# FK 의존성 반영 업로드 순서
+UPLOAD_ORDER = [
+    "brand", "manufacturer", "ingredients_dic", "promotions",
+    "products_core", "products_category", "products_stats",
+    "products_ingredients", "functional",
+    "users_profile", "users_repurchase",
+    "reviews_core", "reviews_text",
+]
+
+
+class CrawlerETLv2:
+    """ERD v2 스키마 기반 BigQuery ETL
+
+    transformer.py가 생성한 13개 테이블 dict를 받아 BigQuery에 UPSERT한다.
+
+    사용법:
+        from etl_loader import CrawlerETLv2
+
+        etl = CrawlerETLv2()
+        etl.upload_all(tables)  # {테이블명: DataFrame}
+    """
+
+    def __init__(self, dataset: str = DEFAULT_DATASET):
+        self.dataset = dataset
+        self.client = get_client()
+
+    def upload_all(self, tables: Dict[str, pd.DataFrame]) -> Dict[str, dict]:
+        """
+        13개 테이블을 FK 순서대로 BigQuery에 UPSERT
+
+        Parameters
+        ----------
+        tables : {테이블명: DataFrame}
+
+        Returns
+        -------
+        {테이블명: {"status": "success", "total_processed": n}}
+        """
+        results = {}
+
+        for name in UPLOAD_ORDER:
+            df = tables.get(name)
+            if df is None or df.empty:
+                results[name] = {"status": "skipped", "total_processed": 0}
+                continue
+
+            result = self.upload_table(name, df)
+            results[name] = result
+            print(f"  {name}: {result['total_processed']}행 upsert")
+
+        return results
+
+    def upload_table(self, name: str, df: pd.DataFrame) -> dict:
+        """단일 테이블 UPSERT"""
+        return upsert_df(df, name, dataset=self.dataset)
+
+    # ── 마스터 캐시 (새 스키마) ──
+
+    def get_brands_map(self) -> Dict[str, int]:
+        """브랜드명 → brand_id"""
+        df = query_to_df(f"SELECT brand_id, name FROM {self.dataset}.brand")
+        return dict(zip(df["name"], df["brand_id"]))
+
+    def get_ingredients_map(self) -> Dict[str, int]:
+        """성분명 → ingredient_id"""
+        df = query_to_df(f"SELECT ingredient_id, ingredient_name FROM {self.dataset}.ingredients_dic")
+        return dict(zip(df["ingredient_name"], df["ingredient_id"]))
+
+    def get_table_count(self, table: str) -> int:
+        """테이블 행 수"""
+        return get_table_count(table, self.dataset)
+
+
 if __name__ == "__main__":
     print("=== ETL Loader 테스트 ===")
     etl = CrawlerETL()

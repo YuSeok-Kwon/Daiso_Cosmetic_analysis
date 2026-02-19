@@ -23,8 +23,25 @@ from typing import List, Optional
 KEY_PATH = Path(__file__).parent.parent.parent / "config" / "daiso-analysis-4d05c813a295.json"
 DEFAULT_DATASET = "daiso"
 
-# 테이블별 Primary Key 매핑
+# 테이블별 Primary Key 매핑 (ERD v2 — 13개 테이블)
 TABLE_KEYS = {
+    "brand": ["brand_id"],
+    "manufacturer": ["manufacturer_id"],
+    "ingredients_dic": ["ingredient_id"],
+    "products_core": ["product_code"],
+    "products_stats": ["product_code"],
+    "products_category": ["product_code"],
+    "products_ingredients": ["product_code", "ingredient_id"],
+    "functional": ["product_code"],
+    "promotions": ["promotion_id"],
+    "reviews_core": ["review_id"],
+    "reviews_text": ["review_id"],
+    "users_profile": ["user_id"],
+    "users_repurchase": ["user_id"],
+}
+
+# 구 스키마 매핑 (하위 호환)
+TABLE_KEYS_LEGACY = {
     "brands": ["brand_id"],
     "categories": ["category_id"],
     "ingredients_master": ["ingredient_id"],
@@ -35,7 +52,6 @@ TABLE_KEYS = {
     "users": ["user_id"],
     "reviews": ["order_id"],
     "review_analysis": ["order_id"],
-    "promotions": ["promotion_id"],
 }
 
 

@@ -1,0 +1,19 @@
+pipeline:
+  auto_schedule:
+    enabled: false          # 월간 자동 실행 (default: false)
+    cron: "0 3 1 * *"      # 매월 1일 03시
+
+  crawling:
+    all_categories: true    # 전체 카테고리 크롤링
+    headless: true          # 헤드리스 모드
+    crawl_reviews: true
+    crawl_ingredients: true
+
+  storage:
+    local:
+      csv: true
+      parquet: true
+      base_dir: "02_processed_data"
+    bigquery:
+      enabled: false        # BigQuery 업로드 (default: false)
+      dataset: "daiso"
