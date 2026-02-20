@@ -305,10 +305,9 @@ class CrawlerETL:
         """
         크롤러 ingredients CSV → BigQuery 적재
 
-        크롤러 컬럼: product_id, name, ingredient, can_halal, can_vegan
+        크롤러 컬럼: product_id, name, ingredient
         BigQuery:
           - product_ingredients: product_code, ingredient_id, rank
-          - product_attributes: can_halal, can_vegan 업데이트
 
         Returns:
             (product_ingredients 적재 수, attributes 업데이트 수)
@@ -335,27 +334,7 @@ class CrawlerETL:
         upsert_df(df_pi, "product_ingredients", dataset=self.dataset)
         print(f"  product_ingredients: {len(df_pi)}행 upsert")
 
-        # 2. product_attributes 업데이트 (can_halal, can_vegan)
-        if 'can_halal' in df.columns or 'can_vegan' in df.columns:
-            df_attrs = df.groupby('product_code').agg({
-                'can_halal': 'first',
-                'can_vegan': 'first'
-            }).reset_index()
-
-            # 기존 product_attributes에 merge
-            existing = query_to_df(f"SELECT * FROM {self.dataset}.product_attributes")
-            if not existing.empty:
-                merged = existing.merge(df_attrs, on='product_code', how='left', suffixes=('', '_new'))
-                for col in ['can_halal', 'can_vegan']:
-                    if f'{col}_new' in merged.columns:
-                        merged[col] = merged[f'{col}_new'].combine_first(merged[col])
-                        merged = merged.drop(columns=[f'{col}_new'])
-                upsert_df(merged, "product_attributes", dataset=self.dataset)
-                print(f"  product_attributes: {len(df_attrs)}행 업데이트")
-            else:
-                print("  product_attributes: 기존 데이터 없음, 스킵")
-        else:
-            df_attrs = pd.DataFrame()
+        df_attrs = pd.DataFrame()
 
         return len(df_pi), len(df_attrs)
 

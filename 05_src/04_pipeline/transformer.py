@@ -71,7 +71,7 @@ class CrawlerToERDTransformer:
         reviews_df : 크롤러 reviews raw
             (product_code, date, user_masked, rating, text, image_count)
         ingredients_df : 크롤러 ingredients raw
-            (product_id, ingredient, can_halal, can_vegan)
+            (product_id, ingredient)
         existing_data : 기존 final/ CSV 데이터 (ID 유지용)
             {"brand": df, "users_profile": df, ...}
         promotions_df : promotions.csv (수동 관리)

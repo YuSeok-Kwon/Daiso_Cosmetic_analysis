@@ -4,7 +4,6 @@
 
 __all__ = [
     'clova_ocr',
-    'halal_vegan_api',
     'ingredient_detector',
     'ingredient_postprocessor',
     'ocr_utils_split',

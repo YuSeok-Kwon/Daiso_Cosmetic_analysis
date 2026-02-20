@@ -4,10 +4,30 @@ pipeline:
     cron: "0 3 1 * *"      # 매월 1일 03시
 
   crawling:
-    all_categories: true    # 전체 카테고리 크롤링
+    mode: "incremental"     # "incremental" | "full"
     headless: true          # 헤드리스 모드
     crawl_reviews: true
     crawl_ingredients: true
+    history_file: "05_src/01_crawling/cache/crawl_history.json"
+
+    # 카테고리 선택
+    #   - all → 해당 중분류의 소분류 전체
+    #   - 개별 소분류명 → 해당 소분류만
+    #   - 키 자체가 없으면 → 해당 중분류 비활성화
+    #   - active_categories 자체가 없으면 → 전체 카테고리
+    active_categories:
+      스킨케어:
+        - all
+      메이크업:
+        - all
+      네일용품:
+        - all
+      맨케어:
+        - all
+      미용소품:
+        - all
+      헤어/바디:
+        - all
 
   storage:
     local:

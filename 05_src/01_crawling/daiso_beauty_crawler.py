@@ -23,7 +23,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from config import DAISO_BEAUTY_CATEGORIES
 from modules.ocr_utils_split import extract_text_from_image_url_split, extract_text_bottom_up_3920
-from modules.halal_vegan_checker import check_halal_vegan_status
 from modules.ingredient_parser import (
     normalize_ingredient_name,
     is_valid_ingredient,
@@ -52,10 +51,10 @@ user_id_map = defaultdict(lambda: f"user_{len(user_id_map)+1:04d}")
 
 def extract_ingredients_multi_source(driver, product_code: str, product_name: str) -> list:
     """
-    다중 소스에서 성분 추출 및 교차 검증 + 할랄/비건 판정
+    다중 소스에서 성분 추출 및 교차 검증
 
     Returns:
-        list of dicts with: product_id, name, ingredient, can_halal, can_vegan, not_halal
+        list of dicts with: product_id, name, ingredient
     """
     all_ingredients = {}  # {성분명: {confidence, sources[], reason}}
 
@@ -278,7 +277,7 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
         except Exception as e:
             logger.error(f"OCR 실패: {str(e)}")
 
-    # 최종 필터링: 신뢰도 기준 정렬 및 할랄/비건 판정
+    # 최종 필터링: 신뢰도 기준 정렬
     final_ingredients = []
 
     for name, info in all_ingredients.items():
@@ -288,36 +287,16 @@ def extract_ingredients_multi_source(driver, product_code: str, product_name: st
 
         # 신뢰도 50% 이상만 포함
         if final_conf >= 0.5:
-            # 할랄/비건 적합성 판정
-            halal_vegan = check_halal_vegan_status(name)
-
-            # 할랄 부적합 성분명 추출 (is_halal이 'No'인 경우)
-            not_halal_ingredient = name if halal_vegan['is_halal'] == 'No' else ''
-
             final_ingredients.append({
                 'product_id': product_code,
                 'name': product_name,
                 'ingredient': name,
-                'can_halal': halal_vegan['is_halal'],
-                'can_vegan': halal_vegan['is_vegan'],
-                'not_halal': not_halal_ingredient
             })
 
     # 성분명 기준으로 정렬
     final_ingredients.sort(key=lambda x: x['ingredient'])
 
     logger.info(f"최종 성분: {len(final_ingredients)}개")
-
-    # 할랄/비건 통계 (Unknown도 의심으로 카운트)
-    vegan_count = len([x for x in final_ingredients if x['can_vegan'] == 'Yes'])
-    vegan_unknown = len([x for x in final_ingredients if x['can_vegan'] == 'Unknown'])
-    non_vegan_count = len([x for x in final_ingredients if x['can_vegan'] == 'No'])
-    halal_questionable = len([x for x in final_ingredients if x['can_halal'] in ('Questionable', 'Unknown')])
-    haram_count = len([x for x in final_ingredients if x['can_halal'] == 'No'])
-
-    logger.info(f"할랄/비건 분석:")
-    logger.info(f"  - 비건 적합: {vegan_count}개 | 확인필요: {vegan_unknown}개 | 부적합: {non_vegan_count}개")
-    logger.info(f"  - 할랄 의심: {halal_questionable}개 | 부적합: {haram_count}개")
 
     return final_ingredients
 
@@ -525,8 +504,15 @@ def _extract_basic_info(driver, product: dict, url_pdno: str, category_2: str) -
     return url_pdno
 
 
-def _extract_reviews(driver, product_code: str) -> list:
-    """리뷰 크롤링"""
+def _extract_reviews(driver, product_code: str, cutoff_date: str = None) -> list:
+    """리뷰 크롤링
+
+    Parameters
+    ----------
+    cutoff_date : 이 날짜 이하의 리뷰를 만나면 조기 종료 (YYYY-MM-DD 형식).
+                  리뷰는 날짜 역순(최신→과거)으로 나열되므로
+                  cutoff 이하를 만나면 이후 리뷰도 모두 이전 것이다.
+    """
     reviews = []
 
     for page in range(1, 999):
@@ -534,9 +520,16 @@ def _extract_reviews(driver, product_code: str) -> list:
         review_elements = driver.find_elements(By.CLASS_NAME, "review-detail")
         logger.debug(f"{page}페이지 리뷰 수: {len(review_elements)}")
 
+        hit_cutoff = False
         for r in review_elements:
             try:
                 date = r.find_element(By.CLASS_NAME, "cw-bar-list").text.split()[0]
+
+                # 증분 크롤링: cutoff 이하 날짜 도달 시 조기 종료
+                if cutoff_date and date.replace(".", "-") <= cutoff_date:
+                    hit_cutoff = True
+                    break
+
                 user_raw = r.find_element(By.CLASS_NAME, "con-writer-id").text.strip()
                 rating_raw = r.find_element(By.CLASS_NAME, "hiddenText").text.strip()
                 text = r.find_element(By.CSS_SELECTOR, ".review-desc .cont").text.strip()
@@ -556,6 +549,10 @@ def _extract_reviews(driver, product_code: str) -> list:
             except:
                 continue
 
+        if hit_cutoff:
+            logger.info(f"cutoff 도달 ({cutoff_date}): {len(reviews)}개 신규 리뷰 수집 후 종료")
+            break
+
         # 다음 페이지
         try:
             next_btn = driver.find_element(By.CLASS_NAME, "btn-next")
@@ -574,37 +571,14 @@ def _extract_reviews(driver, product_code: str) -> list:
 
 
 def _extract_ingredients_and_certifications(driver, product: dict) -> list:
-    """성분 및 인증 정보 추출"""
+    """성분 정보 추출"""
     ingredients = []
 
-    # 할랄/비건 인증 정보 추출
-    try:
-        editor_content = driver.find_element(By.CSS_SELECTOR, "div.editor-content")
-        content_text = editor_content.text.lower()
-
-        certifications = []
-        if '할랄' in content_text or 'halal' in content_text:
-            certifications.append('할랄')
-            logger.info("할랄 인증 제품 발견")
-        if '비건' in content_text or 'vegan' in content_text:
-            certifications.append('비건')
-            logger.info("비건 인증 제품 발견")
-
-        if certifications:
-            product['certifications'] = ', '.join(certifications)
-    except:
-        pass
-
-    # 성분 추출
     try:
         ingredients = extract_ingredients_multi_source(
             driver, product['product_code'], product['name']
         )
         logger.info(f"성분 추출 완료: {len(ingredients)}개")
-
-        # 할랄/비건 판정
-        if ingredients:
-            _determine_halal_vegan_status(product, ingredients)
 
     except Exception as e:
         logger.error(f"성분 추출 오류: {str(e)}")
@@ -613,35 +587,7 @@ def _extract_ingredients_and_certifications(driver, product: dict) -> list:
     return ingredients
 
 
-def _determine_halal_vegan_status(product: dict, ingredients: list):
-    """할랄/비건 인증 가능 여부 판정"""
-    # 비건 판정
-    non_vegan = [ing for ing in ingredients if ing.get('can_vegan') == 'No']
-    if non_vegan:
-        product['can_비건'] = 'No'
-        logger.info(f"비건 부적합: {len(non_vegan)}개 동물성 성분")
-    elif any(ing.get('can_vegan') == 'Unknown' for ing in ingredients):
-        product['can_비건'] = 'Unknown'
-    else:
-        product['can_비건'] = 'Yes'
-
-    # 할랄 판정
-    haram = [ing for ing in ingredients if ing.get('can_halal') == 'No']
-    questionable = [ing for ing in ingredients if ing.get('can_halal') == 'Questionable']
-
-    if haram:
-        product['can_할랄인증'] = 'No'
-        logger.info(f"할랄 부적합: {len(haram)}개 부적합 성분")
-    elif questionable:
-        product['can_할랄인증'] = 'Questionable'
-        logger.info(f"할랄 원료확인 필요: {len(questionable)}개 의심 성분")
-    elif any(ing.get('can_halal') == 'Unknown' for ing in ingredients):
-        product['can_할랄인증'] = 'Unknown'
-    else:
-        product['can_할랄인증'] = 'Yes'
-
-
-def crawl_product_detail(driver, url, category_home, category_1, category_2, crawl_reviews=True, crawl_ingredients=True):
+def crawl_product_detail(driver, url, category_home, category_1, category_2, crawl_reviews=True, crawl_ingredients=True, review_cutoff_date=None):
     """제품 상세 정보 크롤링 (리팩토링됨)"""
     # URL에서 pdNo 추출
     url_pdno_match = re.search(r"pdNo=([A-Z0-9]+)", url)
@@ -665,9 +611,6 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
         "likes": 0,
         "shares": 0,
         "url": url,
-        "can_할랄인증": "Unknown",
-        "can_비건": "Unknown",
-        "certifications": "",
     }
 
     # 1. 페이지 로드
@@ -698,8 +641,8 @@ def crawl_product_detail(driver, url, category_home, category_1, category_2, cra
     # 5. 리뷰 크롤링
     reviews = []
     if crawl_reviews:
-        logger.info(f"리뷰 수집 시작")
-        reviews = _extract_reviews(driver, product["product_code"])
+        logger.info(f"리뷰 수집 시작" + (f" (cutoff: {review_cutoff_date})" if review_cutoff_date else ""))
+        reviews = _extract_reviews(driver, product["product_code"], cutoff_date=review_cutoff_date)
         logger.info(f"리뷰 수집 완료: {len(reviews)}개")
 
     # 6. 성분 크롤링
@@ -977,8 +920,9 @@ def main():
         logger.info("브라우저 종료 완료")
 
 
-def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True):
-    """비대화형 모드: 전체 카테고리 크롤링 (파이프라인용)
+def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True,
+            categories_filter=None, history=None):
+    """비대화형 모드: 전체/증분 카테고리 크롤링 (파이프라인용)
 
     전체 뷰티 카테고리를 자동으로 크롤링하고 CSV를 저장한다.
     main()의 대화형 input() 없이 실행 가능.
@@ -988,20 +932,29 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True):
     crawl_reviews : 리뷰 크롤링 여부
     crawl_ingredients : 성분 크롤링 여부
     headless : 헤드리스 모드 (True=브라우저 숨김)
+    categories_filter : 카테고리 필터 dict (None이면 전체)
+        예: {"스킨케어": ["all"], "메이크업": ["베이스메이크업", "립메이크업"]}
+    history : CrawlHistory 인스턴스 (None이면 풀 크롤링)
 
     Returns
     -------
     (products_csv_path, reviews_csv_path, ingredients_csv_path)
     경로가 없으면 해당 위치에 None
     """
-    # 전체 카테고리 조합 생성
+    # 카테고리 필터링 적용
     categories = []
     for middle_name, info in DAISO_BEAUTY_CATEGORIES.items():
+        if categories_filter and middle_name not in categories_filter:
+            continue
+        allowed_sub = categories_filter.get(middle_name) if categories_filter else None
         middle_code = info["중분류코드"]
         for small_code, small_name in info["소분류"].items():
+            if allowed_sub and "all" not in allowed_sub and small_name not in allowed_sub:
+                continue
             categories.append((middle_name, middle_code, small_code, small_name))
 
-    logger.info(f"run_all 시작: {len(categories)}개 카테고리, reviews={crawl_reviews}, ingredients={crawl_ingredients}")
+    mode_label = "증분" if history else "풀"
+    logger.info(f"run_all 시작 ({mode_label}): {len(categories)}개 카테고리, reviews={crawl_reviews}, ingredients={crawl_ingredients}")
 
     # 드라이버 설정
     options = webdriver.ChromeOptions()
@@ -1016,6 +969,7 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True):
     all_reviews = []
     all_ingredients = []
     seen_product_codes = set()
+    stats = {"new": 0, "updated": 0, "skipped": 0}
 
     try:
         for middle, middle_code, small_code, small_name in categories:
@@ -1028,38 +982,84 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True):
             for idx, link in enumerate(links, 1):
                 try:
                     pdno_match = re.search(r"pdNo=([A-Z0-9]+)", link)
-                    pdno_preview = pdno_match.group(1) if pdno_match else "알수없음"
-                    logger.info(f"[{idx}/{len(links)}] pdNo: {pdno_preview}")
+                    product_code = pdno_match.group(1) if pdno_match else None
+                    if not product_code:
+                        logger.warning(f"pdNo 추출 실패: {link}")
+                        continue
 
-                    product, reviews, ingredients = crawl_product_detail(
-                        driver, link,
-                        category_home="뷰티/위생",
-                        category_1=middle,
-                        category_2=small_name,
-                        crawl_reviews=crawl_reviews,
-                        crawl_ingredients=crawl_ingredients,
-                    )
+                    if product_code in seen_product_codes:
+                        logger.debug(f"중복 스킵: {product_code}")
+                        stats["skipped"] += 1
+                        continue
 
-                    if product:
-                        if product["product_code"] in seen_product_codes:
-                            logger.warning(f"중복 스킵: {product['product_code']}")
+                    seen_product_codes.add(product_code)
+
+                    # 증분 모드: 기존 제품은 리뷰만 업데이트
+                    if history and not history.is_new_product(product_code):
+                        if not crawl_reviews:
+                            stats["skipped"] += 1
                             continue
 
-                        seen_product_codes.add(product["product_code"])
-                        all_products.append(product)
-                        all_reviews.extend(reviews)
-                        all_ingredients.extend(ingredients)
+                        cutoff = history.get_last_review_date(product_code)
+                        logger.info(f"[{idx}/{len(links)}] 기존 제품 리뷰 업데이트: {product_code} (cutoff: {cutoff})")
 
-                        logger.info(
-                            f"완료: [{product['name'][:40]}] | "
-                            f"리뷰: {len(reviews)}개 | 성분: {len(ingredients)}개"
+                        _, reviews, _ = crawl_product_detail(
+                            driver, link,
+                            category_home="뷰티/위생",
+                            category_1=middle,
+                            category_2=small_name,
+                            crawl_reviews=True,
+                            crawl_ingredients=False,
+                            review_cutoff_date=cutoff,
                         )
+
+                        all_reviews.extend(reviews)
+                        if reviews:
+                            max_date = max(r["date"] for r in reviews)
+                            history.update_product(product_code, review_date=max_date)
+                        stats["updated"] += 1
+
+                    else:
+                        # 신규 제품 또는 풀 모드 → 전체 크롤링
+                        logger.info(f"[{idx}/{len(links)}] {'신규' if history else ''} 전체 크롤링: {product_code}")
+
+                        product, reviews, ingredients = crawl_product_detail(
+                            driver, link,
+                            category_home="뷰티/위생",
+                            category_1=middle,
+                            category_2=small_name,
+                            crawl_reviews=crawl_reviews,
+                            crawl_ingredients=crawl_ingredients,
+                        )
+
+                        if product:
+                            all_products.append(product)
+                            all_reviews.extend(reviews)
+                            all_ingredients.extend(ingredients)
+
+                            logger.info(
+                                f"완료: [{product['name'][:40]}] | "
+                                f"리뷰: {len(reviews)}개 | 성분: {len(ingredients)}개"
+                            )
+
+                            if history:
+                                max_date = max((r["date"] for r in reviews), default=None) if reviews else None
+                                history.update_product(product_code, review_date=max_date)
+
+                        stats["new"] += 1
 
                     time.sleep(1)
 
                 except Exception as e:
                     logger.error(f"크롤링 실패: {link} — {e}")
                     continue
+
+        # 증분 모드: 이력 저장
+        if history:
+            history.save()
+            logger.info(f"크롤링 이력 저장 완료 (총 {history.product_count}개 제품)")
+
+        logger.info(f"통계: 신규={stats['new']}, 업데이트={stats['updated']}, 스킵={stats['skipped']}")
 
         # CSV 저장
         date_str = get_date_string()

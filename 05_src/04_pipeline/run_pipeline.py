@@ -3,8 +3,11 @@
 크롤러 → ERD 파이프라인 오케스트레이션
 
 사용법:
-    # 전체 실행 (크롤링 → 변환 → 로컬 저장)
+    # 전체 실행 (증분 크롤링 → 변환 → 로컬 저장)
     python 05_src/04_pipeline/run_pipeline.py
+
+    # 강제 풀 크롤링
+    python 05_src/04_pipeline/run_pipeline.py --full
 
     # 변환+저장만 (기존 크롤러 CSV 재사용)
     python 05_src/04_pipeline/run_pipeline.py --skip-crawl \\
@@ -48,7 +51,13 @@ def load_config() -> dict:
     # yaml 미설치 시 기본값 반환
     return {
         "pipeline": {
-            "crawling": {"all_categories": True, "headless": True, "crawl_reviews": True, "crawl_ingredients": True},
+            "crawling": {
+                "mode": "incremental",
+                "headless": True,
+                "crawl_reviews": True,
+                "crawl_ingredients": True,
+                "history_file": "05_src/01_crawling/cache/crawl_history.json",
+            },
             "storage": {
                 "local": {"csv": True, "parquet": True, "base_dir": "02_processed_data"},
                 "bigquery": {"enabled": False, "dataset": "daiso"},
@@ -57,9 +66,55 @@ def load_config() -> dict:
     }
 
 
-def run_crawling(config: dict) -> tuple:
+def _parse_active_categories(active_categories: dict | None) -> dict | None:
+    """config.yaml의 active_categories를 파싱하여 categories_filter dict로 변환
+
+    Parameters
+    ----------
+    active_categories : yaml에서 읽은 dict 또는 None
+        예: {"스킨케어": ["all"], "메이크업": ["베이스메이크업"]}
+
+    Returns
+    -------
+    dict | None
+        {중분류명: [소분류명...]} 또는 None (전체 카테고리)
+    """
+    if not active_categories:
+        return None
+
+    # 크롤러의 카테고리 설정 로드 (검증용)
+    crawler_dir = PROJECT_ROOT / "05_src" / "01_crawling"
+    sys.path.insert(0, str(crawler_dir))
+    from config import DAISO_BEAUTY_CATEGORIES
+
+    result = {}
+    for middle_name, sub_list in active_categories.items():
+        if middle_name not in DAISO_BEAUTY_CATEGORIES:
+            print(f"  [경고] config.yaml의 '{middle_name}'은 DAISO_BEAUTY_CATEGORIES에 없습니다. 무시합니다.")
+            continue
+
+        if not isinstance(sub_list, list):
+            sub_list = [sub_list]
+
+        # "all"이 아닌 개별 소분류 검증
+        if "all" not in sub_list:
+            valid_sub_names = set(DAISO_BEAUTY_CATEGORIES[middle_name]["소분류"].values())
+            for sub in sub_list:
+                if sub not in valid_sub_names:
+                    print(f"  [경고] '{middle_name}' > '{sub}'는 유효한 소분류가 아닙니다. 무시합니다.")
+            sub_list = [s for s in sub_list if s in valid_sub_names]
+
+        if sub_list:
+            result[middle_name] = sub_list
+
+    return result if result else None
+
+
+def run_crawling(config: dict, force_full: bool = False) -> tuple:
     """크롤러 실행 → raw CSV 3개 경로 반환"""
     crawl_cfg = config.get("pipeline", {}).get("crawling", {})
+    mode = crawl_cfg.get("mode", "incremental")
+    is_full = force_full or (mode == "full")
 
     # 크롤러 경로 추가
     crawler_dir = PROJECT_ROOT / "05_src" / "01_crawling"
@@ -67,11 +122,33 @@ def run_crawling(config: dict) -> tuple:
     os.chdir(crawler_dir)
 
     from daiso_beauty_crawler import run_all
+    from crawl_history import CrawlHistory
+
+    # 카테고리 필터 파싱
+    categories_filter = _parse_active_categories(crawl_cfg.get("active_categories"))
+    if categories_filter:
+        print(f"  카테고리 필터: {list(categories_filter.keys())}")
+
+    # 이력 로드 (증분 모드일 때만)
+    history = None
+    if not is_full:
+        history_file = crawl_cfg.get("history_file", "cache/crawl_history.json")
+        history_path = str(PROJECT_ROOT / history_file)
+
+        # bootstrapping: reviews_core.csv에서 이력 초기화
+        reviews_core_path = str(PROJECT_ROOT / "02_processed_data" / "csv" / "final" / "reviews_core.csv")
+        history = CrawlHistory.from_existing_csv(history_path, reviews_core_path)
+
+        print(f"  크롤링 모드: 증분 (이력: {history.product_count}개 제품)")
+    else:
+        print(f"  크롤링 모드: 풀 (전체 재크롤링)")
 
     products_path, reviews_path, ingredients_path = run_all(
         crawl_reviews=crawl_cfg.get("crawl_reviews", True),
         crawl_ingredients=crawl_cfg.get("crawl_ingredients", True),
         headless=crawl_cfg.get("headless", True),
+        categories_filter=categories_filter,
+        history=history,
     )
 
     # 경로를 절대경로로 변환
@@ -180,6 +257,7 @@ def run_upload_bq(tables: dict, config: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="크롤러 → ERD 파이프라인")
     parser.add_argument("--skip-crawl", action="store_true", help="크롤링 단계 건너뛰기")
+    parser.add_argument("--full", action="store_true", help="강제 풀 크롤링 (증분 모드 무시)")
     parser.add_argument("--products", type=str, help="기존 products CSV 경로")
     parser.add_argument("--reviews", type=str, help="기존 reviews CSV 경로")
     parser.add_argument("--ingredients", type=str, help="기존 ingredients CSV 경로")
@@ -191,8 +269,10 @@ def main():
     config = load_config()
     start_time = datetime.now()
 
+    crawl_mode = "풀" if args.full else config.get("pipeline", {}).get("crawling", {}).get("mode", "incremental")
+
     print("=" * 60)
-    print("크롤러 → ERD 파이프라인")
+    print(f"크롤러 → ERD 파이프라인 (크롤링 모드: {crawl_mode})")
     print(f"시작 시간: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
@@ -202,7 +282,7 @@ def main():
     # Step 1: 크롤링
     if not args.skip_crawl:
         print("\n[Step 1] 크롤링 실행...")
-        products_csv, reviews_csv, ingredients_csv = run_crawling(config)
+        products_csv, reviews_csv, ingredients_csv = run_crawling(config, force_full=args.full)
     else:
         products_csv = args.products
         reviews_csv = args.reviews
