@@ -1,6 +1,7 @@
 # 크롤링 결과 데이터
 data/
 *.csv
+*.parquet
 *.json
 *.xlsx
 
