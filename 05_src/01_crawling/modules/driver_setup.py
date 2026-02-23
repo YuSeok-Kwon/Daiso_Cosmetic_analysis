@@ -54,10 +54,9 @@ def create_driver(headless=None):
     options.add_experimental_option("prefs", prefs)
 
     try:
-        # undetected-chromedriver 생성
+        # undetected-chromedriver 생성 (버전 자동 감지)
         driver = uc.Chrome(
             options=options,
-            version_main=144,  # Chrome 버전 명시
             driver_executable_path=None,  # 자동으로 다운로드
         )
 
