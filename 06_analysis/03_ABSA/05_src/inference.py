@@ -98,7 +98,7 @@ class ABSAInference:
         input_ids = encodings["input_ids"].to(self.device)
         attention_mask = encodings["attention_mask"].to(self.device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self.model(input_ids, attention_mask)
 
             # Sentiment
@@ -258,11 +258,13 @@ class ABSAInference:
         """
         low_sent_conf = sentiment_confidence < self.ambiguous_sentiment_threshold
 
-        # aspect별 top-1 vs top-2 확률 차이가 0.2 미만인 aspect가 있으면 ambiguous
+        # non-none으로 예측된 aspect에서만 margin 확인 (none은 대부분이므로 무시)
         sorted_probs = np.sort(aspect_probs, axis=-1)  # [N, 11, 4]
         top1 = sorted_probs[:, :, -1]
         top2 = sorted_probs[:, :, -2]
-        close_margin = ((top1 - top2) < 0.2).any(axis=1)  # [N]
+        close_margin_per_aspect = (top1 - top2) < 0.2  # [N, 11]
+        is_non_none = (aspect_preds != 0)  # [N, 11]
+        close_margin = (close_margin_per_aspect & is_non_none).any(axis=1)  # [N]
 
         return low_sent_conf | close_margin
 
@@ -308,8 +310,13 @@ def run_inference_on_reviews(
     model_path: Path,
     model_name: str = "beomi/KcELECTRA-base",
     batch_size: int = 128,
+    chunk_size: int = 10000,
 ) -> pd.DataFrame:
-    """리뷰 CSV에 대해 추론 실행"""
+    """
+    리뷰 CSV에 대해 추론 실행.
+
+    chunk_size 단위로 읽고 처리하여 streaming CSV 저장 (메모리 폭발 방지).
+    """
     from transformers import AutoTokenizer
     from RQ_absa.model import load_model
 
@@ -317,12 +324,7 @@ def run_inference_on_reviews(
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = load_model(checkpoint_path=model_path, model_name=model_name)
 
-    # Threshold 자동 로드
     none_thresholds = _load_none_thresholds(model_path)
-
-    print("\nLoading reviews...")
-    df = pd.read_csv(input_path)
-    print(f"Loaded {len(df):,} reviews")
 
     inference = ABSAInference(
         model=model,
@@ -331,30 +333,44 @@ def run_inference_on_reviews(
         none_thresholds=none_thresholds,
     )
 
-    results_df = inference.infer_dataframe(df)
-    inference.save_results(results_df, output_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 통계
+    total_rows = 0
+    total_ambiguous = 0
+    header_written = False
+
+    print(f"\nStreaming inference (chunk_size={chunk_size:,})...")
+
+    for chunk_df in pd.read_csv(input_path, chunksize=chunk_size):
+        chunk_result = inference.infer_dataframe(chunk_df)
+
+        # CSV에 append 모드로 저장
+        chunk_result.to_csv(
+            output_path,
+            mode="a" if header_written else "w",
+            header=not header_written,
+            index=False,
+            encoding="utf-8-sig"
+        )
+        header_written = True
+
+        total_rows += len(chunk_result)
+        total_ambiguous += chunk_result["is_ambiguous"].sum()
+        print(f"  누적: {total_rows:,} / ambiguous: {total_ambiguous:,}")
+
+    print(f"\nSaved streaming results to: {output_path}")
+    print(f"Total: {total_rows:,} reviews, ambiguous: {total_ambiguous:,} "
+          f"({total_ambiguous / total_rows * 100:.1f}%)")
+
+    # 최종 통계용으로 결과 로드 (선택적)
+    results_df = pd.read_csv(output_path)
+
     print("\n" + "=" * 60)
     print("INFERENCE STATISTICS")
     print("=" * 60)
     print("\nSentiment distribution:")
     print(results_df["sentiment"].value_counts(normalize=True).sort_index())
-
-    print("\nAspect-Sentiment frequency:")
-    all_aspects = []
-    for aspects in results_df["aspect_sentiments"]:
-        for a in aspects:
-            all_aspects.append(f"{a['aspect']}:{a['sentiment']}")
-    if all_aspects:
-        aspect_counts = pd.Series(all_aspects).value_counts()
-        for combo, count in aspect_counts.head(20).items():
-            print(f"  {combo}: {count:,} ({count / len(results_df) * 100:.1f}%)")
-
-    print("\nAspects per review:")
-    results_df["num_aspects"] = results_df["aspect_sentiments"].apply(len)
-    print(results_df["num_aspects"].describe())
-
     print("=" * 60)
 
     return results_df
