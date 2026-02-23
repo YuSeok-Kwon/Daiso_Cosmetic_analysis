@@ -415,13 +415,14 @@ def create_model_with_class_weights(
             all_sentiment_labels.append(item["sentiment_label"].item())
             all_aspect_labels.append(item["aspect_label"].tolist())
 
+        from RQ_absa.config import SENTIMENT_LABELS, ASPECT_SENTIMENT_LABELS
+
         sentiment_tensor = torch.tensor(all_sentiment_labels)
         sentiment_class_weights = compute_class_weights(sentiment_tensor, num_sentiment_labels)
 
         print("\nSentiment class distribution:")
         class_counts = torch.bincount(sentiment_tensor, minlength=num_sentiment_labels)
-        class_names = ["negative", "neutral", "positive"]
-        for name, count, weight in zip(class_names, class_counts, sentiment_class_weights):
+        for name, count, weight in zip(SENTIMENT_LABELS, class_counts, sentiment_class_weights):
             print(f"  {name}: {count.item()} samples, weight={weight.item():.4f}")
 
         # Aspect class weights (4-class: none/neg/neu/pos)
@@ -431,8 +432,7 @@ def create_model_with_class_weights(
         print("\nAspect-Sentiment class distribution:")
         flat_aspects = aspect_tensor.view(-1)
         aspect_counts = torch.bincount(flat_aspects, minlength=num_aspect_sentiment_classes)
-        aspect_names = ["none", "negative", "neutral", "positive"]
-        for name, count, weight in zip(aspect_names, aspect_counts, aspect_class_weights):
+        for name, count, weight in zip(ASPECT_SENTIMENT_LABELS, aspect_counts, aspect_class_weights):
             print(f"  {name}: {count.item()} samples, weight={weight.item():.4f}")
 
     model = MultiTaskABSAModel(

@@ -29,8 +29,9 @@ output_dir = project_root / "data" / "processed"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 ASPECTS = [
-    "배송/포장", "품질/불량", "가격/가성비", "사용감/성능",
-    "디자인", "재질/냄새", "CS/응대", "재구매", "색상/발색", "용량/휴대"
+    "배송/포장", "품질/퀄리티", "가격/가성비", "사용감/성능",
+    "용량/휴대", "디자인", "재질/냄새", "CS/응대", "재구매", "색상/발색",
+    "미분류",
 ]
 
 
@@ -61,11 +62,11 @@ def analyze_review(client: OpenAI, text: str, rating: int, model: str = "gpt-4o-
 {rating}점 (5점 만점)
 
 [가능한 Aspect]
-배송/포장, 품질/불량, 가격/가성비, 사용감/성능, 디자인, 재질/냄새, CS/응대, 재구매, 색상/발색, 용량/휴대
+배송/포장, 품질/퀄리티, 가격/가성비, 사용감/성능, 용량/휴대, 디자인, 재질/냄새, CS/응대, 재구매, 색상/발색, 미분류
 
 [작업]
 이 리뷰에서 언급된 aspect와 각각의 sentiment를 추출하세요.
-- 실제로 언급된 aspect만 추출
+- 실제로 언급된 aspect만 추출 (어디에도 해당하지 않으면 "미분류")
 - 각 aspect별로 독립적인 sentiment 판단 (별점과 무관하게 텍스트 기반)
 - sentiment: positive/neutral/negative
 - confidence: 0.0 ~ 1.0 (판단 확신도)

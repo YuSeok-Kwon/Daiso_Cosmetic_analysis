@@ -40,21 +40,19 @@ class ABSADataProcessor:
 
         if aspect_sentiment_labels is None:
             from RQ_absa.config import ASPECT_SENTIMENT_LABELS
-            self.aspect_sentiment_labels = aspect_sentiment_labels
+            self.aspect_sentiment_labels = ASPECT_SENTIMENT_LABELS
         else:
             self.aspect_sentiment_labels = aspect_sentiment_labels
 
-        # 매핑 생성
+        # 매핑 생성 (config 기준 단일 소스)
         self.sentiment_to_id = {label: idx for idx, label in enumerate(self.sentiment_labels)}
         self.id_to_sentiment = {idx: label for idx, label in enumerate(self.sentiment_labels)}
 
         self.aspect_to_id = {label: idx for idx, label in enumerate(self.aspect_labels)}
         self.id_to_aspect = {idx: label for idx, label in enumerate(self.aspect_labels)}
 
-        # aspect_sentiment 매핑: none=0, negative=1, neutral=2, positive=3
-        self.aspect_sentiment_to_id = {
-            "none": 0, "negative": 1, "neutral": 2, "positive": 3
-        }
+        from RQ_absa.config import ASPECT_SENTIMENT_TO_ID
+        self.aspect_sentiment_to_id = ASPECT_SENTIMENT_TO_ID
 
     def load_and_group_csv(self, csv_path: Path) -> pd.DataFrame:
         """
