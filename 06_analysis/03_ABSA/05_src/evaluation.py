@@ -31,7 +31,8 @@ class ABSAEvaluator:
         aspect_sentiment_labels: List[str] = None
     ):
         if sentiment_labels is None:
-            self.sentiment_labels = ["negative", "neutral", "positive"]
+            from RQ_absa.config import SENTIMENT_LABELS
+            self.sentiment_labels = SENTIMENT_LABELS
         else:
             self.sentiment_labels = sentiment_labels
 
@@ -42,7 +43,8 @@ class ABSAEvaluator:
             self.aspect_labels = aspect_labels
 
         if aspect_sentiment_labels is None:
-            self.aspect_sentiment_labels = ["none", "negative", "neutral", "positive"]
+            from RQ_absa.config import ASPECT_SENTIMENT_LABELS
+            self.aspect_sentiment_labels = ASPECT_SENTIMENT_LABELS
         else:
             self.aspect_sentiment_labels = aspect_sentiment_labels
 
