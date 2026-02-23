@@ -932,6 +932,13 @@ CHEMICAL_ENDING_EXCEPTIONS = frozenset([
     '글라이콜', '글라이골',  # glycol OCR 변형
 ])
 
+# 성분명으로 유효한 단어 화이트리스트 (어미 필터에 의해 잘못 거부되는 것 방지)
+INGREDIENT_WHITELIST = frozenset([
+    '센텔라', '알로에베라', '시카', '판테라', '히알루로니다', '아미카',
+    '아르니카', '카렌듈라', '동백나무', '살리실레이트로', '마데카',
+    '세라마이다', '폴리글루타', '가', '바오밥나무',
+])
+
 
 def _check_fast_rejection(text: str) -> tuple:
     """
@@ -968,8 +975,14 @@ def _check_fast_rejection(text: str) -> tuple:
     if len(text) == 2 and re.match(r'^[가-힣]{2}$', text) and text in INVALID_2CHAR_KOREAN:
         return True, "invalid_2char"
 
-    # 한글 동사형 어미로 끝나는 단어 거부
-    if re.search(r'(할|된|한|는|을|를|가|이|에|로|의|과|와|도|만|서|라|다)$', text):
+    # 화이트리스트 체크 (어미 필터보다 우선)
+    if text in INGREDIENT_WHITELIST:
+        return False, ""
+
+    # 한글 동사형 어미/조사로 끝나는 단어 거부
+    # 주의: '라', '다', '가', '로'는 성분명 어미와 충돌이 많아 제외
+    # (센텔라, 알로에베라, 시카, 마데카소사이드 등)
+    if re.search(r'(할|된|한|는|을|를|이|에|의|과|와|도|만|서)$', text):
         # 화학 성분명 어미 예외 체크
         if not any(text.endswith(suffix) for suffix in CHEMICAL_ENDING_EXCEPTIONS):
             return True, "verb_ending"
