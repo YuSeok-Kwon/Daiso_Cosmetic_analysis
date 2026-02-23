@@ -9,7 +9,7 @@ reviews_core의 각 리뷰에 해당하는 promotion_id를 할당한다.
      리뷰 작성일이 프로모션 기간(start_date ~ end_date) ±7일 이내
      - brand_id=95 (ALL)인 프로모션은 모든 브랜드에 매칭
   3. 복수 매칭 시: 프로모션 기간 중심일과 가장 가까운 프로모션 선택
-  4. 미매칭: promotion_id = 0
+  4. 미매칭: promotion_id = NULL (ERD Optional FK)
 
 사용법:
   python assign_promotion.py                    # 기본 실행
@@ -27,7 +27,7 @@ from pathlib import Path
 # ── 설정 ──────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 FINAL_DIR = PROJECT_ROOT / "02_processed_data" / "csv" / "final"
-ALL_BRAND_ID = 95  # 전체 브랜드 대상 프로모션의 brand_id
+ALL_BRAND_ID = 0  # 전체 브랜드 대상 프로모션의 brand_id
 DEFAULT_BUFFER_DAYS = 7
 
 
@@ -118,9 +118,10 @@ def assign_promotion(
             .drop_duplicates("review_idx", keep="first")
             .set_index("review_idx")["promotion_id"]
         )
-        reviews["promotion_id"] = best.reindex(reviews.index).fillna(0).astype(int)
+        reviews["promotion_id"] = best.reindex(reviews.index).astype("Int64")
     else:
-        reviews["promotion_id"] = 0
+        reviews["promotion_id"] = pd.NA
+    reviews["promotion_id"] = reviews["promotion_id"].astype("Int64")
 
     # 임시 컬럼 정리
     reviews.drop(columns=["brand_id"], inplace=True)
@@ -131,7 +132,7 @@ def assign_promotion(
 def print_summary(reviews: pd.DataFrame, promotions: pd.DataFrame):
     """매칭 결과 요약 출력"""
     total = len(reviews)
-    matched = (reviews["promotion_id"] != 0).sum()
+    matched = reviews["promotion_id"].notna().sum()
     unmatched = total - matched
 
     print("=" * 60)
@@ -142,7 +143,7 @@ def print_summary(reviews: pd.DataFrame, promotions: pd.DataFrame):
     print(f"  미매칭        : {unmatched:>10,}건 ({unmatched / total * 100:.2f}%)")
 
     print(f"\n  [프로모션별 매칭 건수]")
-    promo_counts = reviews[reviews["promotion_id"] != 0]["promotion_id"].value_counts().sort_index()
+    promo_counts = reviews[reviews["promotion_id"].notna()]["promotion_id"].value_counts().sort_index()
     promo_desc = promotions.set_index("promotion_id")["description"]
 
     for pid, cnt in promo_counts.items():
