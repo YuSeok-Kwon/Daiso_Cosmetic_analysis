@@ -17,7 +17,7 @@
 | `review_date` | DATE | 리뷰 작성일 |
 | `image_count` | INT | 리뷰에 첨부된 이미지 수 |
 | `is_reorder` | BOOL | 재구매 리뷰 여부 ("재구매"로 시작하는 리뷰) |
-| `promotion_id` (FK) | INT | 프로모션 ID (Promotions 참조, 0=미매칭) |
+| `promotion_id` (FK) | INT | 프로모션 ID (Promotions 참조, NULL=미매칭) |
 
 #### Reviews_text
 
@@ -58,9 +58,10 @@
 | `likes` | INT | 좋아요 수 |
 | `shares` | INT | 공유 수 |
 | `review_count` | INT | 리뷰 수 |
+| `first_review_date` | DATE | 첫 리뷰 작성일 (리뷰 없으면 NULL) |
 | `engagement_score` | FLOAT | 인기도 점수 (0.15×likes + 0.30×shares + 0.55×review_count) |
 | `cp_index` | FLOAT | 가성비 지표 ((engagement_score / price) × 1000) |
-| `review_density` | FLOAT | 리뷰 밀도 (review_count / 출시 후 일수) |
+| `review_density` | FLOAT | 리뷰 밀도 (review_count / (마지막리뷰일 - 첫리뷰일)) |
 
 #### Products_category
 
@@ -101,7 +102,7 @@ OCR로 추출된 성분 사전과 브랜드/제조사 마스터 정보입니다.
 | `ingredient_id` (PK) | INT | 성분 고유 식별자 |
 | `ingredient_name` | VARCHAR | 성분명 (한글) |
 | **`ingredient_type`** | VARCHAR | 화학 계열 분류 (Polymer, Ester, Vitamin 등 33종) |
-| `allergic` | FLOAT | 알레르기 유발 위험도 (0.0 = 안전, 1.0 = 주의) |
+| `is_allergic` | BOOL | 알레르기 유발 성분 여부 (True/False) |
 | `effect` | VARCHAR | 성분 효능 (Moisturizing, Anti-aging, Brightening 등) |
 
 #### products_ingredients
@@ -149,6 +150,15 @@ OCR로 추출된 성분 사전과 브랜드/제조사 마스터 정보입니다.
 ### 4. 유저 및 분석 그룹 (Users & Loyalty)
 
 고객 세그먼트와 재구매 패턴을 분석하는 테이블입니다.
+
+#### User_id_map
+
+마스킹된 유저 닉네임과 user_id 간의 1:1 매핑 테이블입니다. 증분 크롤링 시에도 동일 `user_masked`에 동일 `user_id`가 유지됩니다.
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `user_masked` (PK) | VARCHAR | 마스킹된 유저 닉네임 (예: `ths*****`) |
+| `user_id` | INT | 유저 고유 식별자 |
 
 #### Users_profile
 
