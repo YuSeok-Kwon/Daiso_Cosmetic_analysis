@@ -116,9 +116,68 @@ stats["products_core.csv"] = len(products_core)
 products_category = pi_prod[["product_code", "category_1", "category_2"]].copy()
 stats["products_category.csv"] = len(products_category)
 
-# 3-3. Products_stats
-products_stats = pi_prod[["product_code", "likes", "shares", "review_count",
-                           "engagement_score", "cp_index", "review_density"]].copy()
+# 3-3. Products_stats (PR 기반 재계산)
+# likes, shares는 PI 원본 유지 (크롤링 값)
+products_stats = pi_prod[["product_code", "likes", "shares"]].copy()
+products_stats["likes"] = products_stats["likes"].fillna(0).astype(int)
+products_stats["shares"] = products_stats["shares"].fillna(0).astype(int)
+
+# review_count: 필터링된 PR에서 실제 리뷰 수 재계산
+review_agg = (
+    pr.groupby("product_code")
+    .agg(
+        review_count=("order_id", "count"),
+        first_review=("date", "min"),
+        last_review=("date", "max"),
+    )
+    .reset_index()
+)
+products_stats = products_stats.merge(review_agg, on="product_code", how="left")
+products_stats["review_count"] = products_stats["review_count"].fillna(0).astype(int)
+
+# engagement_score: 0.15 * likes + 0.30 * shares + 0.55 * review_count
+products_stats["engagement_score"] = (
+    0.15 * products_stats["likes"]
+    + 0.30 * products_stats["shares"]
+    + 0.55 * products_stats["review_count"]
+).round(2)
+
+# cp_index: (engagement_score / price) * 1000
+price_map = dict(zip(products_core["product_code"], products_core["price"]))
+products_stats["_price"] = products_stats["product_code"].map(price_map).fillna(0)
+products_stats["cp_index"] = np.where(
+    products_stats["_price"] > 0,
+    (products_stats["engagement_score"] / products_stats["_price"]) * 1000,
+    0.0,
+).round(4)
+
+# review_density: review_count / (last_review - first_review).days (0일→1일)
+products_stats["first_review"] = pd.to_datetime(products_stats["first_review"])
+products_stats["last_review"] = pd.to_datetime(products_stats["last_review"])
+day_span = (products_stats["last_review"] - products_stats["first_review"]).dt.days.fillna(0).clip(lower=1)
+products_stats["review_density"] = (products_stats["review_count"] / day_span).round(4)
+products_stats.loc[products_stats["review_count"] == 0, "review_density"] = 0.0
+
+# first_review_date
+products_stats["first_review_date"] = products_stats["first_review"].dt.strftime("%Y-%m-%d")
+products_stats.loc[products_stats["review_count"] == 0, "first_review_date"] = pd.NA
+
+# risk_score: 기존 값 유지
+existing_stats_path = FINAL / "products_stats.csv"
+if existing_stats_path.exists():
+    old_stats = pd.read_csv(existing_stats_path)
+    if "risk_score" in old_stats.columns:
+        risk_map = dict(zip(old_stats["product_code"], old_stats["risk_score"]))
+        products_stats["risk_score"] = products_stats["product_code"].map(risk_map).fillna(0.0)
+    else:
+        products_stats["risk_score"] = 0.0
+else:
+    products_stats["risk_score"] = 0.0
+
+products_stats = products_stats[
+    ["product_code", "likes", "shares", "review_count", "first_review_date",
+     "engagement_score", "cp_index", "review_density", "risk_score"]
+]
 stats["products_stats.csv"] = len(products_stats)
 
 # 3-4. Functional (functional==1인 제품만)
@@ -171,46 +230,106 @@ stats["products_ingredients.csv"] = len(products_ingredients)
 # ── 4. 유저 테이블 ────────────────────────────────────────
 print("\n[4/6] 유저 테이블 추출...")
 
-# 4-1. Users_profile
+# 4-1. Users_profile (필터링된 pr에서 직접 재계산)
 pr["date_dt"] = pd.to_datetime(pr["date"])
-user_dates = pr.groupby("user_id")["date_dt"].agg(["min", "max"])
-user_dates["review_tenure"] = (user_dates["max"] - user_dates["min"]).dt.days
-tenure_map = user_dates["review_tenure"].to_dict()
 
-user_cols = ["user_id", "user_total_reviews", "user_activity_level",
-             "user_rating_tendency"]
-users_profile = pr[user_cols].drop_duplicates("user_id").copy()
-users_profile["review_tenure"] = users_profile["user_id"].map(tenure_map)
+user_agg = (
+    pr.groupby("user_id")
+    .agg(
+        user_total_reviews=("order_id", "count"),
+        first_review=("date_dt", "min"),
+        last_review=("date_dt", "max"),
+    )
+    .reset_index()
+)
+
+# user_activity_level: Newbie(1) / Junior(2-5) / Regular(6-20) / VIP(21+)
+conditions = [
+    user_agg["user_total_reviews"] == 1,
+    user_agg["user_total_reviews"].between(2, 5),
+    user_agg["user_total_reviews"].between(6, 20),
+    user_agg["user_total_reviews"] >= 21,
+]
+user_agg["user_activity_level"] = np.select(
+    conditions, ["Newbie", "Junior", "Regular", "VIP"], default="Newbie"
+)
+
+# user_rating_tendency: 재구매 리뷰 평균 평점 기반
+reorder_reviews = pr[pr["is_reorder"] == True]
+reorder_stats = (
+    reorder_reviews.groupby("user_id")
+    .agg(reorder_count=("order_id", "size"), avg_rating_reorder=("rating", "mean"))
+    .reset_index()
+)
+user_agg = user_agg.merge(reorder_stats, on="user_id", how="left")
+user_agg["reorder_count"] = user_agg["reorder_count"].fillna(0).astype(int)
+user_agg["avg_rating_reorder"] = user_agg["avg_rating_reorder"].fillna(0.0)
+
+conditions = [
+    user_agg["reorder_count"] == 0,
+    user_agg["avg_rating_reorder"] < 3.0,
+    user_agg["avg_rating_reorder"].between(3.0, 4.0, inclusive="both"),
+    user_agg["avg_rating_reorder"].between(4.0, 4.8, inclusive="left"),
+    user_agg["avg_rating_reorder"] >= 4.8,
+]
+user_agg["user_rating_tendency"] = np.select(
+    conditions,
+    ["No Reorder", "Critical", "Balanced", "Mostly Positive", "Always Positive"],
+    default="No Reorder",
+)
+
+# review_tenure
+user_agg["review_tenure"] = (user_agg["last_review"] - user_agg["first_review"]).dt.days
+
+users_profile = user_agg[
+    ["user_id", "user_total_reviews", "user_activity_level",
+     "user_rating_tendency", "review_tenure"]
+].copy()
 users_profile["user_total_reviews"] = users_profile["user_total_reviews"].astype("Int64")
 users_profile = users_profile.sort_values("user_id").reset_index(drop=True)
 stats["users_profile.csv"] = len(users_profile)
 
-# 4-2. Users_repurchase (재구매 경험 유저만)
-users_repurchase = (
-    pr.groupby("user_id")
-    .agg(
-        reorder_user_category=("is_category_repurchase", "sum"),
-        reorder_user_brand=("is_brand_repurchase", "sum"),
-    )
-    .reset_index()
+# 4-2. Users_repurchase (필터링된 pr에서 직접 재계산, is_reorder=True 리뷰만 대상)
+reorder_pr = pr[pr["is_reorder"] == True].copy()
+
+# reorder_user_category: 동일 category_2에 재구매 리뷰 2건 이상 → 유저별 합산
+user_cat = reorder_pr.groupby(["user_id", "category_2"]).size().reset_index(name="cnt")
+user_cat_repurchase = (
+    user_cat[user_cat["cnt"] >= 2]
+    .groupby("user_id")["cnt"]
+    .sum()
+    .reset_index(name="reorder_user_category")
 )
-users_repurchase["reorder_user_category"] = users_repurchase["reorder_user_category"].astype(int)
-users_repurchase["reorder_user_brand"] = users_repurchase["reorder_user_brand"].astype(int)
 
-# reorder_user_avg_rating 추가 (PR 원본에서 가져오기)
-avg_rating = pr[["user_id", "user_avg_rating_reorder"]].drop_duplicates("user_id")
-avg_rating = avg_rating.rename(columns={"user_avg_rating_reorder": "reorder_user_avg_rating"})
-users_repurchase = users_repurchase.merge(avg_rating, on="user_id", how="left")
+# reorder_user_brand: 동일 brand에 재구매 리뷰 2건 이상 → 유저별 합산
+reorder_pr["_brand_id"] = reorder_pr["brand"].map(brand_map)
+user_brand = reorder_pr.groupby(["user_id", "_brand_id"]).size().reset_index(name="cnt")
+user_brand_repurchase = (
+    user_brand[user_brand["cnt"] >= 2]
+    .groupby("user_id")["cnt"]
+    .sum()
+    .reset_index(name="reorder_user_brand")
+)
 
-# 3개 컬럼 모두 0/NaN이면 제거
-users_repurchase = users_repurchase[
-    ~((users_repurchase["reorder_user_category"] == 0)
-      & (users_repurchase["reorder_user_brand"] == 0)
-      & (users_repurchase["reorder_user_avg_rating"].isna()))
-].reset_index(drop=True)
+# reorder_user_avg_rating: 재구매 리뷰 평균 평점
+reorder_avg = (
+    reorder_pr.groupby("user_id")["rating"]
+    .mean()
+    .round(2)
+    .reset_index(name="reorder_user_avg_rating")
+)
+
+# 재구매 경험 유저만 포함
+reorder_users = reorder_pr[["user_id"]].drop_duplicates()
+users_repurchase = reorder_users.merge(user_cat_repurchase, on="user_id", how="left")
+users_repurchase = users_repurchase.merge(user_brand_repurchase, on="user_id", how="left")
+users_repurchase = users_repurchase.merge(reorder_avg, on="user_id", how="left")
+users_repurchase["reorder_user_category"] = users_repurchase["reorder_user_category"].fillna(0).astype(int)
+users_repurchase["reorder_user_brand"] = users_repurchase["reorder_user_brand"].fillna(0).astype(int)
 
 users_repurchase = users_repurchase[["user_id", "reorder_user_category",
                                      "reorder_user_brand", "reorder_user_avg_rating"]]
+users_repurchase = users_repurchase.sort_values("user_id").reset_index(drop=True)
 stats["users_repurchase.csv"] = len(users_repurchase)
 
 # ── 5. 리뷰 테이블 ────────────────────────────────────────

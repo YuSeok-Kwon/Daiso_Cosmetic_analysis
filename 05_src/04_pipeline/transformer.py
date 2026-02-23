@@ -310,33 +310,56 @@ class CrawlerToERDTransformer:
             )
             return
 
-        # ── user_id 할당 ──
+        # ── user_id 할당 (user_id_map.csv 매핑 테이블 활용) ──
         existing_profile = self.existing.get("users_profile", pd.DataFrame())
-        # 기존 reviews_core에서 user_masked → user_id 매핑 복원은 불가능
-        # 대신 기존 user_id 체계 유지를 위해 기존 reviews_core 활용
         existing_reviews = self.existing.get("reviews_core", pd.DataFrame())
 
         user_col = "user_masked" if "user_masked" in df.columns else "user"
         if user_col not in df.columns:
             df["user_id"] = range(1, len(df) + 1)
         else:
-            # 기존 매핑 구축: 기존 reviews에서 (product_code, review_date, rating) → user_id
-            # 그러나 크롤러 raw에는 user_masked가 있고, 기존 reviews_core에는 user_id만 있음
-            # → user_masked 기반으로 새 user_id 할당하되, 기존 최대 ID 유지
-            unique_users = df[user_col].dropna().unique()
-            if not existing_profile.empty and "user_id" in existing_profile.columns:
-                max_uid = existing_profile["user_id"].max()
-            elif not existing_reviews.empty and "user_id" in existing_reviews.columns:
-                max_uid = existing_reviews["user_id"].max()
-            else:
-                max_uid = 0
+            # 기존 매핑 테이블 로드 (user_masked → user_id 영속 매핑)
+            map_path = Path(self.final_dir) / "user_id_map.csv" if hasattr(self, 'final_dir') else None
+            if map_path is None:
+                # final_dir가 없으면 기본 경로 시도
+                map_path = Path(__file__).resolve().parent.parent.parent / "02_processed_data" / "csv" / "final" / "user_id_map.csv"
 
+            existing_map = {}
+            if map_path.exists():
+                map_df = pd.read_csv(map_path)
+                existing_map = dict(zip(map_df["user_masked"], map_df["user_id"]))
+
+            # 기존 최대 user_id 결정
+            max_uid = 0
+            if existing_map:
+                max_uid = max(existing_map.values())
+            if not existing_profile.empty and "user_id" in existing_profile.columns:
+                max_uid = max(max_uid, existing_profile["user_id"].max())
+            if not existing_reviews.empty and "user_id" in existing_reviews.columns:
+                max_uid = max(max_uid, existing_reviews["user_id"].max())
+
+            # 기존 매핑 적용 + 신규 유저에게 새 ID 부여
+            unique_users = df[user_col].dropna().unique()
             user_map = {}
+            new_count = 0
             for u in unique_users:
-                max_uid += 1
-                user_map[u] = max_uid
+                if u in existing_map:
+                    user_map[u] = existing_map[u]
+                else:
+                    max_uid += 1
+                    user_map[u] = max_uid
+                    new_count += 1
 
             df["user_id"] = df[user_col].map(user_map)
+
+            # 매핑 테이블 업데이트 저장
+            updated_map = pd.DataFrame(
+                [(k, v) for k, v in user_map.items()],
+                columns=["user_masked", "user_id"]
+            ).sort_values("user_id").reset_index(drop=True)
+            updated_map.to_csv(map_path, index=False)
+            if new_count > 0:
+                print(f"  user_id_map 업데이트: 기존 {len(existing_map)}명 + 신규 {new_count}명 = {len(user_map)}명")
 
         # ── review_id 생성 ──
         if not existing_reviews.empty and "review_id" in existing_reviews.columns:
@@ -374,8 +397,8 @@ class CrawlerToERDTransformer:
         if "image_count" not in df.columns:
             df["image_count"] = 0
 
-        # ── promotion_id 매칭 ──
-        df["promotion_id"] = 0
+        # ── promotion_id 매칭 (NULL = 프로모션 없음, ERD Optional FK) ──
+        df["promotion_id"] = pd.NA
         promotions = self.tables.get("promotions", pd.DataFrame())
         products_core = self.tables.get("products_core", pd.DataFrame())
 
@@ -392,7 +415,8 @@ class CrawlerToERDTransformer:
                 temp = assign_promotion(temp, products_core, promotions)
                 df["promotion_id"] = temp["promotion_id"].values
             except Exception:
-                df["promotion_id"] = 0
+                df["promotion_id"] = pd.NA
+        df["promotion_id"] = df["promotion_id"].replace(0, pd.NA).astype("Int64")
 
         # ── reviews_core 출력 ──
         reviews_core = df[
@@ -465,7 +489,7 @@ class CrawlerToERDTransformer:
 
         if reviews_core.empty:
             self.tables["users_repurchase"] = pd.DataFrame(
-                columns=["user_id", "user_category_repurchase", "user_brand_repurchase"]
+                columns=["user_id", "reorder_user_category", "reorder_user_brand", "reorder_user_avg_rating"]
             )
             return
         self.tables["users_repurchase"] = compute_users_repurchase(

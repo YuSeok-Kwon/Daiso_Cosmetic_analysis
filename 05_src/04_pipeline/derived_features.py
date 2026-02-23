@@ -80,6 +80,10 @@ def compute_products_stats(
     stats["review_density"] = (stats["review_count"] / day_span).round(4)
     stats.loc[stats["review_count"] == 0, "review_density"] = 0.0
 
+    # first_review_date 컬럼 추가
+    stats["first_review_date"] = stats["first_review"].dt.strftime("%Y-%m-%d")
+    stats.loc[stats["review_count"] == 0, "first_review_date"] = pd.NA
+
     # 최종 컬럼 선택
     result = stats[
         [
@@ -87,6 +91,7 @@ def compute_products_stats(
             "likes",
             "shares",
             "review_count",
+            "first_review_date",
             "engagement_score",
             "cp_index",
             "review_density",
@@ -191,49 +196,65 @@ def compute_users_repurchase(
     """
     users_repurchase 테이블 계산
 
+    is_reorder=True인 리뷰만 대상으로, 동일 유저가 같은 category_2(소분류)
+    또는 같은 brand_id에 대해 재구매 리뷰를 2건 이상 작성한 경우 해당 리뷰들을
+    1로 표기한 뒤 유저별 합산한다.
+
     Parameters
     ----------
-    reviews_core : reviews_core DataFrame (user_id, product_code 필수)
+    reviews_core : reviews_core DataFrame (user_id, product_code, is_reorder, rating 필수)
     products_core : products_core DataFrame (product_code, brand_id 필수)
-    products_category : products_category DataFrame (product_code, category_1 필수)
+    products_category : products_category DataFrame (product_code, category_2 필수)
 
     Returns
     -------
     users_repurchase DataFrame
     """
-    reviews = reviews_core[["user_id", "product_code"]].copy()
+    # is_reorder=True 리뷰만 대상
+    reorder = reviews_core[reviews_core["is_reorder"] == True][
+        ["user_id", "product_code", "rating"]
+    ].copy()
 
-    # 카테고리 매핑
-    cat_map = products_category.set_index("product_code")["category_1"]
-    reviews["category_1"] = reviews["product_code"].map(cat_map)
+    # 카테고리 매핑 (category_2 소분류 기준)
+    cat_map = products_category.set_index("product_code")["category_2"]
+    reorder["category_2"] = reorder["product_code"].map(cat_map)
 
     # 브랜드 매핑
     brand_map = products_core.set_index("product_code")["brand_id"]
-    reviews["brand_id"] = reviews["product_code"].map(brand_map)
+    reorder["brand_id"] = reorder["product_code"].map(brand_map)
 
-    # user_category_repurchase: 동일 카테고리 2회 이상 구매한 카테고리의 총 리뷰 합
-    user_cat = reviews.groupby(["user_id", "category_1"]).size().reset_index(name="cnt")
+    # reorder_user_category: 동일 category_2에 재구매 리뷰 2건 이상 → 해당 리뷰들 합산
+    user_cat = reorder.groupby(["user_id", "category_2"]).size().reset_index(name="cnt")
     user_cat_repurchase = (
         user_cat[user_cat["cnt"] >= 2]
         .groupby("user_id")["cnt"]
         .sum()
-        .reset_index(name="user_category_repurchase")
+        .reset_index(name="reorder_user_category")
     )
 
-    # user_brand_repurchase: 동일 브랜드 2회 이상 구매한 브랜드의 총 리뷰 합
-    user_brand = reviews.groupby(["user_id", "brand_id"]).size().reset_index(name="cnt")
+    # reorder_user_brand: 동일 brand_id에 재구매 리뷰 2건 이상 → 해당 리뷰들 합산
+    user_brand = reorder.groupby(["user_id", "brand_id"]).size().reset_index(name="cnt")
     user_brand_repurchase = (
         user_brand[user_brand["cnt"] >= 2]
         .groupby("user_id")["cnt"]
         .sum()
-        .reset_index(name="user_brand_repurchase")
+        .reset_index(name="reorder_user_brand")
     )
 
-    # 전체 유저 기준으로 병합
-    all_users = reviews[["user_id"]].drop_duplicates()
-    result = all_users.merge(user_cat_repurchase, on="user_id", how="left")
+    # reorder_user_avg_rating: 재구매 리뷰 평균 평점
+    reorder_avg = (
+        reorder.groupby("user_id")["rating"]
+        .mean()
+        .round(2)
+        .reset_index(name="reorder_user_avg_rating")
+    )
+
+    # 재구매 경험 유저만 포함
+    reorder_users = reorder[["user_id"]].drop_duplicates()
+    result = reorder_users.merge(user_cat_repurchase, on="user_id", how="left")
     result = result.merge(user_brand_repurchase, on="user_id", how="left")
-    result["user_category_repurchase"] = result["user_category_repurchase"].fillna(0).astype(int)
-    result["user_brand_repurchase"] = result["user_brand_repurchase"].fillna(0).astype(int)
+    result = result.merge(reorder_avg, on="user_id", how="left")
+    result["reorder_user_category"] = result["reorder_user_category"].fillna(0).astype(int)
+    result["reorder_user_brand"] = result["reorder_user_brand"].fillna(0).astype(int)
 
     return result
