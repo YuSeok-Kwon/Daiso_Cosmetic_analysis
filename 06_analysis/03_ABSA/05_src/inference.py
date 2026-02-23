@@ -1,8 +1,18 @@
 """
-Inference pipeline for ABSA model
+Inference pipeline for ABSA model (Option A: aspect별 4-class 통합)
+
+출력 형식:
+{
+    "review_sentiment": "positive",
+    "review_sentiment_score": 0.85,
+    "aspect_sentiments": [
+        {"aspect": "사용감/성능", "sentiment": "positive", "confidence": 0.92},
+        {"aspect": "재질/냄새", "sentiment": "negative", "confidence": 0.78}
+    ]
+}
 """
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -10,12 +20,17 @@ from tqdm import tqdm
 from typing import List, Dict
 
 from RQ_absa.model import MultiTaskABSAModel
-from RQ_absa.config import ASPECT_LABELS, SENTIMENT_ID_TO_LABEL
+from RQ_absa.config import (
+    ASPECT_LABELS,
+    SENTIMENT_ID_TO_LABEL,
+    ASPECT_SENTIMENT_ID_TO_LABEL,
+)
+from RQ_absa.evaluation import apply_none_thresholds
 
 
 class ABSAInference:
     """
-    Inference pipeline for ABSA model.
+    Inference pipeline for ABSA model (Option A).
     """
 
     def __init__(
@@ -24,35 +39,20 @@ class ABSAInference:
         tokenizer,
         aspect_labels: List[str] = None,
         sentiment_labels: Dict[int, str] = None,
+        aspect_sentiment_labels: Dict[int, str] = None,
         device: str = None,
         max_length: int = 128,
         batch_size: int = 128,
-        aspect_threshold: float = 0.5,
         ambiguous_sentiment_threshold: float = 0.6,
-        ambiguous_aspect_range: tuple = (0.4, 0.6)
+        none_thresholds: np.ndarray = None,
     ):
-        """
-        Args:
-            model: Trained ABSA model
-            tokenizer: Tokenizer
-            aspect_labels: List of aspect label names
-            sentiment_labels: Dict mapping sentiment IDs to labels
-            device: Device to run inference on
-            max_length: Maximum sequence length
-            batch_size: Batch size for inference
-            aspect_threshold: Threshold for aspect prediction
-            ambiguous_sentiment_threshold: Threshold for ambiguous sentiment
-            ambiguous_aspect_range: Range for ambiguous aspect probabilities
-        """
         self.model = model
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.batch_size = batch_size
-        self.aspect_threshold = aspect_threshold
         self.ambiguous_sentiment_threshold = ambiguous_sentiment_threshold
-        self.ambiguous_aspect_range = ambiguous_aspect_range
+        self.none_thresholds = none_thresholds  # [11] per-aspect threshold
 
-        # Device
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -61,90 +61,105 @@ class ABSAInference:
         self.model.to(self.device)
         self.model.eval()
 
-        # Labels
-        if aspect_labels is None:
-            self.aspect_labels = ASPECT_LABELS
-        else:
-            self.aspect_labels = aspect_labels
+        self.aspect_labels = aspect_labels or ASPECT_LABELS
+        self.sentiment_labels = sentiment_labels or SENTIMENT_ID_TO_LABEL
+        self.aspect_sentiment_labels = aspect_sentiment_labels or ASPECT_SENTIMENT_ID_TO_LABEL
 
-        if sentiment_labels is None:
-            self.sentiment_labels = SENTIMENT_ID_TO_LABEL
+        if self.none_thresholds is not None:
+            print(f"Using per-aspect none-thresholds: "
+                  f"min={self.none_thresholds.min():.2f}, "
+                  f"max={self.none_thresholds.max():.2f}, "
+                  f"mean={self.none_thresholds.mean():.2f}")
         else:
-            self.sentiment_labels = sentiment_labels
+            print("Using default argmax (no threshold tuning)")
 
         print(f"Inference initialized on device: {self.device}")
 
-    def predict_batch(
-        self,
-        texts: List[str]
-    ) -> Dict:
+    def predict_batch(self, texts: List[str]) -> Dict:
         """
-        Predict sentiment and aspects for a batch of texts.
-
-        Args:
-            texts: List of review texts
+        배치 추론.
 
         Returns:
-            Dictionary with predictions
+            sentiment_preds: [B]
+            sentiment_probs: [B, 3]
+            sentiment_scores: [B]
+            sentiment_confidence: [B]
+            aspect_preds: [B, 11] (각 값 0~3)
+            aspect_probs: [B, 11, 4]
         """
-        # Tokenize
         encodings = self.tokenizer(
             texts,
             max_length=self.max_length,
-            padding='max_length',
+            padding="max_length",
             truncation=True,
-            return_tensors='pt'
+            return_tensors="pt"
         )
 
-        input_ids = encodings['input_ids'].to(self.device)
-        attention_mask = encodings['attention_mask'].to(self.device)
+        input_ids = encodings["input_ids"].to(self.device)
+        attention_mask = encodings["attention_mask"].to(self.device)
 
-        # Predict
         with torch.no_grad():
             outputs = self.model(input_ids, attention_mask)
 
             # Sentiment
-            sentiment_probs = torch.softmax(outputs['sentiment_logits'], dim=-1)
+            sentiment_probs = torch.softmax(outputs["sentiment_logits"], dim=-1)
             sentiment_preds = torch.argmax(sentiment_probs, dim=-1)
             sentiment_scores = self.model.get_sentiment_score(sentiment_probs)
-
-            # Aspects
-            aspect_probs = torch.sigmoid(outputs['aspect_logits'])
-            aspect_preds = (aspect_probs >= self.aspect_threshold).long()
-
-            # Confidence
             sentiment_confidence = torch.max(sentiment_probs, dim=-1)[0]
 
+            # Aspect: [B, 11, 4] → softmax
+            aspect_probs = torch.softmax(outputs["aspect_logits"], dim=-1)  # [B, 11, 4]
+            aspect_probs_np = aspect_probs.cpu().numpy()
+
+            # Per-aspect threshold 적용
+            if self.none_thresholds is not None:
+                aspect_preds_np = apply_none_thresholds(aspect_probs_np, self.none_thresholds)
+            else:
+                aspect_preds_np = np.argmax(aspect_probs_np, axis=-1)
+
             return {
-                'sentiment_preds': sentiment_preds.cpu().numpy(),
-                'sentiment_probs': sentiment_probs.cpu().numpy(),
-                'sentiment_scores': sentiment_scores.cpu().numpy(),
-                'sentiment_confidence': sentiment_confidence.cpu().numpy(),
-                'aspect_preds': aspect_preds.cpu().numpy(),
-                'aspect_probs': aspect_probs.cpu().numpy()
+                "sentiment_preds": sentiment_preds.cpu().numpy(),
+                "sentiment_probs": sentiment_probs.cpu().numpy(),
+                "sentiment_scores": sentiment_scores.cpu().numpy(),
+                "sentiment_confidence": sentiment_confidence.cpu().numpy(),
+                "aspect_preds": aspect_preds_np,
+                "aspect_probs": aspect_probs_np,
             }
 
+    def _extract_aspect_sentiments(
+        self, aspect_preds: np.ndarray, aspect_probs: np.ndarray
+    ) -> List[List[Dict]]:
+        """
+        aspect_preds [N, 11]에서 none(0)이 아닌 것만 추출하여
+        [{aspect, sentiment, confidence}, ...] 형태로 반환.
+        """
+        results = []
+        for i in range(len(aspect_preds)):
+            review_aspects = []
+            for j, aspect_name in enumerate(self.aspect_labels):
+                pred_id = int(aspect_preds[i, j])
+                if pred_id == 0:  # none → 해당 aspect 미존재
+                    continue
+
+                sentiment_name = self.aspect_sentiment_labels.get(pred_id, "unknown")
+                confidence = float(aspect_probs[i, j, pred_id])
+
+                review_aspects.append({
+                    "aspect": aspect_name,
+                    "sentiment": sentiment_name,
+                    "confidence": confidence,
+                })
+            results.append(review_aspects)
+        return results
+
     def infer_dataframe(
-        self,
-        df: pd.DataFrame,
-        text_column: str = 'text'
+        self, df: pd.DataFrame, text_column: str = "text"
     ) -> pd.DataFrame:
-        """
-        Run inference on a dataframe.
-
-        Args:
-            df: Input dataframe
-            text_column: Name of text column
-
-        Returns:
-            Dataframe with predictions
-        """
+        """DataFrame 전체 추론"""
         print(f"Running inference on {len(df):,} reviews...")
 
-        # Extract texts
         texts = df[text_column].astype(str).tolist()
 
-        # Predict in batches
         all_sentiment_preds = []
         all_sentiment_scores = []
         all_sentiment_confidence = []
@@ -154,101 +169,102 @@ class ABSAInference:
         num_batches = (len(texts) + self.batch_size - 1) // self.batch_size
 
         for i in tqdm(range(num_batches), desc="Inference"):
-            start_idx = i * self.batch_size
-            end_idx = min((i + 1) * self.batch_size, len(texts))
-            batch_texts = texts[start_idx:end_idx]
+            start = i * self.batch_size
+            end = min((i + 1) * self.batch_size, len(texts))
+            batch_texts = texts[start:end]
 
-            # Predict
             predictions = self.predict_batch(batch_texts)
 
-            # Collect
-            all_sentiment_preds.extend(predictions['sentiment_preds'])
-            all_sentiment_scores.extend(predictions['sentiment_scores'])
-            all_sentiment_confidence.extend(predictions['sentiment_confidence'])
-            all_aspect_preds.extend(predictions['aspect_preds'])
-            all_aspect_probs.extend(predictions['aspect_probs'])
+            all_sentiment_preds.extend(predictions["sentiment_preds"])
+            all_sentiment_scores.extend(predictions["sentiment_scores"])
+            all_sentiment_confidence.extend(predictions["sentiment_confidence"])
+            all_aspect_preds.extend(predictions["aspect_preds"])
+            all_aspect_probs.extend(predictions["aspect_probs"])
 
-        # Convert to arrays
         all_sentiment_preds = np.array(all_sentiment_preds)
         all_sentiment_scores = np.array(all_sentiment_scores)
         all_sentiment_confidence = np.array(all_sentiment_confidence)
         all_aspect_preds = np.array(all_aspect_preds)
         all_aspect_probs = np.array(all_aspect_probs)
 
-        # Create output dataframe
+        # aspect별 sentiment 추출 (none 제외)
+        aspect_sentiments = self._extract_aspect_sentiments(all_aspect_preds, all_aspect_probs)
+
+        # 출력 DataFrame 생성
         output_df = df.copy()
+        output_df["sentiment"] = [self.sentiment_labels[p] for p in all_sentiment_preds]
+        output_df["sentiment_score"] = all_sentiment_scores
 
-        # Sentiment
-        output_df['sentiment'] = [self.sentiment_labels[pred] for pred in all_sentiment_preds]
-        output_df['sentiment_score'] = all_sentiment_scores
+        # aspect_sentiments: [{aspect, sentiment, confidence}, ...]
+        output_df["aspect_sentiments"] = aspect_sentiments
 
-        # Aspects
-        aspect_labels_list = []
-        for aspect_pred in all_aspect_preds:
-            labels = [self.aspect_labels[i] for i, val in enumerate(aspect_pred) if val == 1]
-            aspect_labels_list.append(labels)
+        # 하위 호환: aspect_labels (이름 리스트)
+        output_df["aspect_labels"] = [
+            [a["aspect"] for a in aspects] for aspects in aspect_sentiments
+        ]
 
-        output_df['aspect_labels'] = aspect_labels_list
-
-        # Evidence (placeholder for now)
-        output_df['evidence'] = output_df[text_column].apply(
-            lambda x: x[:100] + "..." if len(x) > 100 else x
-        )
-
-        # Summary (placeholder for now)
-        output_df['summary'] = output_df.apply(
-            lambda row: self._generate_summary(row['sentiment'], row['aspect_labels']),
+        # Summary
+        output_df["summary"] = output_df.apply(
+            lambda row: self._generate_summary(row["sentiment"], row["aspect_sentiments"]),
             axis=1
         )
 
-        # Identify ambiguous samples
-        output_df['is_ambiguous'] = self._identify_ambiguous(
-            all_sentiment_confidence,
-            all_aspect_probs
+        # Ambiguous 식별
+        output_df["is_ambiguous"] = self._identify_ambiguous(
+            all_sentiment_confidence, all_aspect_probs, all_aspect_preds
         )
 
         print(f"\nInference complete!")
         print(f"Ambiguous samples: {output_df['is_ambiguous'].sum():,} "
-              f"({output_df['is_ambiguous'].sum()/len(output_df)*100:.1f}%)")
+              f"({output_df['is_ambiguous'].sum() / len(output_df) * 100:.1f}%)")
 
         return output_df
 
-    def _generate_summary(self, sentiment: str, aspect_labels: List[str]) -> str:
-        """Generate summary (rule-based placeholder)"""
-        if len(aspect_labels) == 0:
+    def _generate_summary(self, sentiment: str, aspect_sentiments: List[Dict]) -> str:
+        """감성별 aspect 그룹핑 요약"""
+        if not aspect_sentiments:
             return f"전반적으로 {sentiment}"
 
-        aspects_str = ", ".join(aspect_labels[:3])  # Take first 3
-        if len(aspect_labels) > 3:
-            aspects_str += " 등"
-
         sentiment_kr = {
-            'positive': '긍정적',
-            'neutral': '중립적',
-            'negative': '부정적'
-        }.get(sentiment, sentiment)
+            "positive": "긍정적", "neutral": "중립적", "negative": "부정적"
+        }
 
-        return f"{aspects_str}에 대해 {sentiment_kr}"
+        # 감성별 그룹핑
+        groups = {}
+        for a in aspect_sentiments:
+            sent = a["sentiment"]
+            groups.setdefault(sent, []).append(a["aspect"])
+
+        parts = []
+        for sent, aspects in groups.items():
+            aspects_str = ", ".join(aspects[:3])
+            if len(aspects) > 3:
+                aspects_str += " 등"
+            kr = sentiment_kr.get(sent, sent)
+            parts.append(f"{aspects_str} {kr}")
+
+        return " / ".join(parts)
 
     def _identify_ambiguous(
         self,
         sentiment_confidence: np.ndarray,
-        aspect_probs: np.ndarray
+        aspect_probs: np.ndarray,
+        aspect_preds: np.ndarray
     ) -> np.ndarray:
-        """Identify ambiguous samples"""
-        # Low sentiment confidence
-        low_sentiment_confidence = sentiment_confidence < self.ambiguous_sentiment_threshold
+        """
+        모호한 샘플 식별:
+        - 감성 confidence 낮음
+        - aspect 예측에서 top-1과 top-2 확률 차이가 작음
+        """
+        low_sent_conf = sentiment_confidence < self.ambiguous_sentiment_threshold
 
-        # Aspect probabilities in ambiguous range
-        aspect_in_range = (
-            (aspect_probs >= self.ambiguous_aspect_range[0]) &
-            (aspect_probs <= self.ambiguous_aspect_range[1])
-        ).any(axis=1)
+        # aspect별 top-1 vs top-2 확률 차이가 0.2 미만인 aspect가 있으면 ambiguous
+        sorted_probs = np.sort(aspect_probs, axis=-1)  # [N, 11, 4]
+        top1 = sorted_probs[:, :, -1]
+        top2 = sorted_probs[:, :, -2]
+        close_margin = ((top1 - top2) < 0.2).any(axis=1)  # [N]
 
-        # Combine conditions
-        is_ambiguous = low_sentiment_confidence | aspect_in_range
-
-        return is_ambiguous
+        return low_sent_conf | close_margin
 
     def save_results(
         self,
@@ -257,30 +273,33 @@ class ABSAInference:
         save_ambiguous: bool = True,
         ambiguous_path: Path = None
     ):
-        """
-        Save inference results.
-
-        Args:
-            df: Dataframe with predictions
-            output_path: Path to save full results
-            save_ambiguous: Whether to save ambiguous samples separately
-            ambiguous_path: Path to save ambiguous samples
-        """
-        # Save full results
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        df.to_csv(output_path, index=False, encoding="utf-8-sig")
         print(f"Saved full results to: {output_path}")
 
-        # Save ambiguous samples
         if save_ambiguous:
-            ambiguous_df = df[df['is_ambiguous']].copy()
+            ambiguous_df = df[df["is_ambiguous"]].copy()
             if len(ambiguous_df) > 0:
                 if ambiguous_path is None:
                     ambiguous_path = output_path.parent / f"{output_path.stem}_ambiguous.csv"
-
-                ambiguous_df.to_csv(ambiguous_path, index=False, encoding='utf-8-sig')
+                ambiguous_df.to_csv(ambiguous_path, index=False, encoding="utf-8-sig")
                 print(f"Saved ambiguous samples to: {ambiguous_path}")
                 print(f"  Count: {len(ambiguous_df):,}")
+
+
+def _load_none_thresholds(model_path: Path) -> np.ndarray:
+    """모델 체크포인트와 같은 디렉토리에서 none_thresholds.json 로드"""
+    import json
+    threshold_path = Path(model_path).parent / "none_thresholds.json"
+    if threshold_path.exists():
+        with open(threshold_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        thresholds = np.array(data["thresholds"])
+        print(f"Loaded none-thresholds from: {threshold_path}")
+        print(f"  Tuned F1: {data.get('tuned_f1', 'N/A')}")
+        return thresholds
+    print("No none_thresholds.json found, using default argmax")
+    return None
 
 
 def run_inference_on_reviews(
@@ -289,70 +308,54 @@ def run_inference_on_reviews(
     model_path: Path,
     model_name: str = "beomi/KcELECTRA-base",
     batch_size: int = 128,
-    aspect_threshold: float = 0.5
 ) -> pd.DataFrame:
-    """
-    Run inference on reviews CSV.
-
-    Args:
-        input_path: Path to input CSV
-        output_path: Path to output CSV
-        model_path: Path to model checkpoint
-        model_name: Pretrained model name
-        batch_size: Batch size
-        aspect_threshold: Aspect threshold
-
-    Returns:
-        Dataframe with predictions
-    """
+    """리뷰 CSV에 대해 추론 실행"""
     from transformers import AutoTokenizer
     from RQ_absa.model import load_model
 
     print("Loading model and tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = load_model(
-        checkpoint_path=model_path,
-        model_name=model_name
-    )
+    model = load_model(checkpoint_path=model_path, model_name=model_name)
+
+    # Threshold 자동 로드
+    none_thresholds = _load_none_thresholds(model_path)
 
     print("\nLoading reviews...")
     df = pd.read_csv(input_path)
     print(f"Loaded {len(df):,} reviews")
 
-    # Create inference pipeline
     inference = ABSAInference(
         model=model,
         tokenizer=tokenizer,
         batch_size=batch_size,
-        aspect_threshold=aspect_threshold
+        none_thresholds=none_thresholds,
     )
 
-    # Run inference
     results_df = inference.infer_dataframe(df)
-
-    # Save results
     inference.save_results(results_df, output_path)
 
-    # Print statistics
-    print("\n" + "="*60)
+    # 통계
+    print("\n" + "=" * 60)
     print("INFERENCE STATISTICS")
-    print("="*60)
+    print("=" * 60)
     print("\nSentiment distribution:")
-    print(results_df['sentiment'].value_counts(normalize=True).sort_index())
+    print(results_df["sentiment"].value_counts(normalize=True).sort_index())
 
-    print("\nAspect frequency:")
+    print("\nAspect-Sentiment frequency:")
     all_aspects = []
-    for aspects in results_df['aspect_labels']:
-        all_aspects.extend(aspects)
-    aspect_counts = pd.Series(all_aspects).value_counts()
-    for aspect, count in aspect_counts.items():
-        print(f"  {aspect}: {count:,} ({count/len(results_df)*100:.1f}%)")
+    for aspects in results_df["aspect_sentiments"]:
+        for a in aspects:
+            all_aspects.append(f"{a['aspect']}:{a['sentiment']}")
+    if all_aspects:
+        aspect_counts = pd.Series(all_aspects).value_counts()
+        for combo, count in aspect_counts.head(20).items():
+            print(f"  {combo}: {count:,} ({count / len(results_df) * 100:.1f}%)")
 
     print("\nAspects per review:")
-    results_df['num_aspects'] = results_df['aspect_labels'].apply(len)
-    print(results_df['num_aspects'].describe())
+    results_df["num_aspects"] = results_df["aspect_sentiments"].apply(len)
+    print(results_df["num_aspects"].describe())
 
-    print("="*60)
+    print("=" * 60)
 
     return results_df
 
@@ -361,26 +364,11 @@ def run_inference_from_bigquery(
     model_path: Path,
     model_name: str = "beomi/KcELECTRA-base",
     batch_size: int = 128,
-    aspect_threshold: float = 0.5,
     limit: int = None,
     save_to_bq: bool = True,
     output_csv: Path = None
 ) -> pd.DataFrame:
-    """
-    BigQuery에서 리뷰를 로드하여 추론 실행 후 결과 저장
-
-    Args:
-        model_path: 모델 체크포인트 경로
-        model_name: 사전학습 모델명
-        batch_size: 배치 크기
-        aspect_threshold: Aspect 임계값
-        limit: 최대 처리 리뷰 수
-        save_to_bq: BigQuery에 결과 저장 여부
-        output_csv: CSV 저장 경로 (옵션)
-
-    Returns:
-        분석 결과 DataFrame
-    """
+    """BigQuery에서 리뷰를 로드하여 추론 실행"""
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -393,10 +381,8 @@ def run_inference_from_bigquery(
     from transformers import AutoTokenizer
     from RQ_absa.model import load_model
 
-    # BigQuery 연결
     bq = ABSABigQuery()
 
-    # 미분석 리뷰 로드
     print("BigQuery에서 미분석 리뷰 로드 중...")
     df = bq.load_unanalyzed_reviews(limit=limit)
 
@@ -406,43 +392,39 @@ def run_inference_from_bigquery(
 
     print(f"총 {len(df):,}개 리뷰 로드 완료")
 
-    # 모델 로드
     print("\n모델 로드 중...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = load_model(checkpoint_path=model_path, model_name=model_name)
 
-    # 추론 파이프라인 생성
+    none_thresholds = _load_none_thresholds(model_path)
+
     inference = ABSAInference(
         model=model,
         tokenizer=tokenizer,
         batch_size=batch_size,
-        aspect_threshold=aspect_threshold
+        none_thresholds=none_thresholds,
     )
 
-    # 추론 실행
     print("\n추론 실행 중...")
     results_df = inference.infer_dataframe(df)
 
-    # 통계 출력
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("INFERENCE STATISTICS")
-    print("="*60)
+    print("=" * 60)
     print("\nSentiment distribution:")
-    print(results_df['sentiment'].value_counts(normalize=True).sort_index())
+    print(results_df["sentiment"].value_counts(normalize=True).sort_index())
 
-    # BigQuery 저장
     if save_to_bq:
         print("\nBigQuery에 결과 저장 중...")
         bq.update_review_analysis(results_df)
         print("저장 완료!")
 
-    # CSV 저장 (옵션)
     if output_csv:
         output_csv = Path(output_csv)
         output_csv.parent.mkdir(parents=True, exist_ok=True)
-        results_df.to_csv(output_csv, index=False, encoding='utf-8-sig')
+        results_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
         print(f"CSV 저장: {output_csv}")
 
-    print("="*60)
+    print("=" * 60)
 
     return results_df

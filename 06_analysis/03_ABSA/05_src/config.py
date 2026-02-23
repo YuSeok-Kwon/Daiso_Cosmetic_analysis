@@ -26,23 +26,32 @@ for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, INFERENCE_DATA_DIR,
                   CACHE_DIR, CHECKPOINT_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-# Fixed aspect labels (9 categories)
+# Fixed aspect labels (11 categories, GPT-4o Batch 라벨링 기준)
 ASPECT_LABELS = [
     "배송/포장",
-    "품질/불량",
+    "품질/퀄리티",
     "가격/가성비",
     "사용감/성능",
-    "사이즈/호환",
+    "용량/휴대",
     "디자인",
     "재질/냄새",
     "CS/응대",
-    "재구매"
+    "재구매",
+    "색상/발색",
+    "미분류",
 ]
 
 # Sentiment labels
 SENTIMENT_LABELS = ["negative", "neutral", "positive"]
 SENTIMENT_LABEL_TO_ID = {label: idx for idx, label in enumerate(SENTIMENT_LABELS)}
 SENTIMENT_ID_TO_LABEL = {idx: label for idx, label in enumerate(SENTIMENT_LABELS)}
+
+# Aspect-Sentiment labels (Option A: aspect별 4-class 통합)
+# none=해당 aspect 미존재, negative/neutral/positive=해당 감성
+ASPECT_SENTIMENT_LABELS = ["none", "negative", "neutral", "positive"]
+ASPECT_SENTIMENT_TO_ID = {label: idx for idx, label in enumerate(ASPECT_SENTIMENT_LABELS)}
+ASPECT_SENTIMENT_ID_TO_LABEL = {idx: label for idx, label in enumerate(ASPECT_SENTIMENT_LABELS)}
+NUM_ASPECT_SENTIMENT_CLASSES = len(ASPECT_SENTIMENT_LABELS)  # 4
 
 # Sampling configuration (3단계 층화 샘플링)
 SAMPLING_CONFIG = {
@@ -99,10 +108,17 @@ TRAIN_CONFIG = {
 # Inference configuration
 INFERENCE_CONFIG = {
     "batch_size": 128,
-    "aspect_threshold": 0.5,
     "ambiguous_sentiment_threshold": 0.6,
-    "ambiguous_aspect_range": (0.4, 0.6),
     "num_workers": 4
+}
+
+# None-threshold tuning configuration
+# 학습 완료 후 val set에서 aspect별 최적 threshold를 grid search
+THRESHOLD_TUNING_CONFIG = {
+    "search_range": (0.1, 0.95),   # threshold 탐색 범위
+    "search_step": 0.05,           # grid search 간격
+    "metric": "f1",                # 최적화 대상: "f1" (4-class macro) or "detection_f1"
+    "default_threshold": 0.5,      # 튜닝 전 기본값
 }
 
 # Data split ratios
@@ -133,7 +149,7 @@ OUTPUT_COLUMNS = [
 VALIDATION_CONFIG = {
     # Valid values
     "valid_sentiments": ["positive", "neutral", "negative"],
-    "valid_aspects": ASPECT_LABELS,  # 9개 aspect 사용
+    "valid_aspects": ASPECT_LABELS,  # 11개 aspect 사용
     "score_range": (-1.0, 1.0),
 
     # Negative keywords for risk detection
