@@ -273,6 +273,78 @@ class ABSADataset(Dataset):
         }
 
 
+def create_datasets_from_golden(
+    gold_csv_path: Path,
+    tokenizer,
+    max_length: int = 128,
+    finetune_ratio: float = 0.60,
+    tune_ratio: float = 0.20,
+    test_ratio: float = 0.20,
+    random_state: int = 42
+) -> Tuple[ABSADataset, ABSADataset, ABSADataset]:
+    """
+    골든셋 CSV에서 finetune / tune / test 데이터셋 생성.
+
+    역할 분리:
+    - finetune: Stage 2 파인튜닝 학습용
+    - tune: per-aspect none-threshold 튜닝용
+    - test: 최종 검증용 (학습/튜닝에 절대 사용하지 않음)
+
+    골든셋은 absa_analysis_ready.csv와 동일한 스키마.
+
+    Args:
+        gold_csv_path: golden_set.csv 경로
+        tokenizer: HuggingFace tokenizer
+        max_length: 최대 시퀀스 길이
+        finetune_ratio: 파인튜닝용 비율
+        tune_ratio: threshold 튜닝용 비율
+        test_ratio: 최종 검증용 비율
+        random_state: 랜덤 시드
+
+    Returns:
+        (finetune_dataset, tune_dataset, test_dataset)
+    """
+    assert abs(finetune_ratio + tune_ratio + test_ratio - 1.0) < 1e-6
+
+    processor = ABSADataProcessor()
+    df = processor.load_and_group_csv(gold_csv_path)
+
+    print(f"\n골든셋: {len(df):,} 리뷰")
+
+    # 3-way 분할 (sentiment 기준 층화)
+    finetune_df, temp_df = train_test_split(
+        df,
+        test_size=(1 - finetune_ratio),
+        stratify=df["sentiment_id"],
+        random_state=random_state
+    )
+
+    tune_ratio_adj = tune_ratio / (tune_ratio + test_ratio)
+    tune_df, test_df = train_test_split(
+        temp_df,
+        test_size=(1 - tune_ratio_adj),
+        stratify=temp_df["sentiment_id"],
+        random_state=random_state
+    )
+
+    print(f"  finetune: {len(finetune_df):,} ({len(finetune_df)/len(df)*100:.1f}%)")
+    print(f"  tune:     {len(tune_df):,} ({len(tune_df)/len(df)*100:.1f}%)")
+    print(f"  test:     {len(test_df):,} ({len(test_df)/len(df)*100:.1f}%)")
+
+    datasets = []
+    for name, split_df in [("finetune", finetune_df), ("tune", tune_df), ("test", test_df)]:
+        dataset = ABSADataset(
+            texts=split_df["text"].tolist(),
+            sentiment_labels=split_df["sentiment_id"].tolist(),
+            aspect_labels=split_df["aspect_vector"].tolist(),
+            tokenizer=tokenizer,
+            max_length=max_length
+        )
+        datasets.append(dataset)
+
+    return datasets[0], datasets[1], datasets[2]
+
+
 def create_datasets_from_csv(
     csv_path: Path,
     tokenizer,

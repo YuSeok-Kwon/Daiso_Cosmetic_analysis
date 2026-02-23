@@ -121,6 +121,19 @@ THRESHOLD_TUNING_CONFIG = {
     "default_threshold": 0.5,      # 튜닝 전 기본값
 }
 
+# Fine-tuning configuration (Stage 2: 골든셋 파인튜닝)
+FINETUNE_CONFIG = {
+    "learning_rate": 2e-6,        # Stage 1의 1/10
+    "num_epochs": 5,
+    "batch_size": 16,
+    "warmup_ratio": 0.1,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0,
+    "gold_finetune_ratio": 0.60,  # 골든셋 finetune/tune/test 분할
+    "gold_tune_ratio": 0.20,
+    "gold_test_ratio": 0.20,
+}
+
 # Data split ratios
 SPLIT_RATIOS = {
     "train": 0.70,

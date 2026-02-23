@@ -343,6 +343,102 @@ class ABSATrainer:
                 json.dump(threshold_data, f, indent=2, ensure_ascii=False)
             print(f"Saved thresholds to: {threshold_path}")
 
+    def fine_tune(
+        self,
+        gold_finetune_loader: DataLoader,
+        gold_tune_loader: DataLoader,
+        num_epochs: int = 5,
+        learning_rate: float = 2e-6,
+        warmup_ratio: float = 0.1,
+        weight_decay: float = 0.01,
+    ):
+        """
+        Stage 2: 골든셋 파인튜닝.
+
+        Stage 1 best model에서 이어서 낮은 LR로 학습하여 바이어스를 교정한다.
+        학습 후 gold_tune_loader로 none-threshold를 재튜닝한다.
+
+        Args:
+            gold_finetune_loader: 골든셋 finetune 분할 DataLoader
+            gold_tune_loader: 골든셋 tune 분할 DataLoader (threshold 튜닝용)
+            num_epochs: 파인튜닝 epoch 수
+            learning_rate: Stage 1보다 낮은 LR (기본 2e-6)
+            warmup_ratio: warmup 비율
+            weight_decay: weight decay
+        """
+        print("\n" + "=" * 60)
+        print("STAGE 2: GOLDEN SET FINE-TUNING")
+        print("=" * 60)
+        print(f"  Fine-tune samples: {len(gold_finetune_loader.dataset):,}")
+        print(f"  Tune samples: {len(gold_tune_loader.dataset):,}")
+        print(f"  Learning rate: {learning_rate}")
+        print(f"  Epochs: {num_epochs}")
+        print("=" * 60 + "\n")
+
+        # optimizer 재초기화 (낮은 LR)
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+
+        total_steps = len(gold_finetune_loader) * num_epochs
+        warmup_steps = int(total_steps * warmup_ratio)
+
+        self.scheduler = get_linear_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps
+        )
+
+        # train/val loader를 골든셋으로 교체
+        original_train_loader = self.train_loader
+        original_val_loader = self.val_loader
+        self.train_loader = gold_finetune_loader
+        self.val_loader = gold_tune_loader
+
+        best_finetune_metric = 0.0
+
+        for epoch in range(num_epochs):
+            self.current_epoch = epoch
+            print(f"\n[Fine-tune] Epoch {epoch + 1}/{num_epochs}")
+
+            # gradient_accumulation_steps=1, mid-epoch eval 비활성화
+            train_metrics = self._train_epoch(
+                gradient_accumulation_steps=1,
+                logging_steps=50,
+                eval_steps=0,
+                save_steps=0
+            )
+
+            val_metrics = self.evaluate(gold_tune_loader)
+
+            print(f"  Train Loss: {train_metrics['loss']:.4f}")
+            print(f"  Tune Loss: {val_metrics['loss']:.4f}")
+            print(f"  Tune Sentiment F1: {val_metrics['sentiment_f1_macro']:.4f}")
+            print(f"  Tune Aspect F1: {val_metrics['aspect_sentiment_f1_macro']:.4f}")
+
+            val_metric = val_metrics["aspect_sentiment_f1_macro"]
+            if val_metric > best_finetune_metric:
+                best_finetune_metric = val_metric
+                self.best_val_metric = val_metric
+                self.save_checkpoint(is_best=True, val_metrics=val_metrics)
+                print(f"  New best fine-tuned model! Aspect-Sentiment F1: {val_metric:.4f}")
+
+        print("\n" + "=" * 60)
+        print("FINE-TUNING COMPLETE")
+        print("=" * 60)
+        print(f"Best fine-tune Aspect-Sentiment F1: {best_finetune_metric:.4f}")
+        print("=" * 60)
+
+        # gold_tune_loader로 none-threshold 재튜닝
+        print("\n골든셋 기반 threshold 재튜닝...")
+        self.tune_thresholds()
+
+        # 원래 loader 복원
+        self.train_loader = original_train_loader
+        self.val_loader = original_val_loader
+
     def save_checkpoint(self, is_best: bool = False, val_metrics: Optional[Dict] = None):
         if self.checkpoint_dir is None:
             return
