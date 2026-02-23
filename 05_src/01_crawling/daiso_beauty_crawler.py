@@ -49,6 +49,21 @@ MAX_SCROLLS = 10
 user_id_map = defaultdict(lambda: f"user_{len(user_id_map)+1:04d}")
 
 
+def parse_count(text: str) -> int:
+    """좋아요/공유 수 텍스트를 정수로 변환 (예: '1,234' → 1234, '1.2K' → 1200)"""
+    if not text:
+        return 0
+    text = text.strip().replace(",", "")
+    try:
+        if text.upper().endswith("K"):
+            return int(float(text[:-1]) * 1000)
+        elif text.upper().endswith("M"):
+            return int(float(text[:-1]) * 1000000)
+        return int(text)
+    except (ValueError, IndexError):
+        return 0
+
+
 def extract_ingredients_multi_source(driver, product_code: str, product_name: str) -> list:
     """
     다중 소스에서 성분 추출 및 교차 검증
