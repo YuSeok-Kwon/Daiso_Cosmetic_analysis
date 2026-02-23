@@ -1,6 +1,7 @@
 """
 Training pipeline for ABSA model (Option A: aspect별 4-class 통합)
 """
+import math
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -84,7 +85,9 @@ class ABSATrainer:
         eval_steps: int = 500,
         save_steps: int = 500
     ):
-        total_steps = len(self.train_loader) * num_epochs // gradient_accumulation_steps
+        # leftover batch 포함한 정확한 step 수 계산
+        steps_per_epoch = math.ceil(len(self.train_loader) / gradient_accumulation_steps)
+        total_steps = steps_per_epoch * num_epochs
         warmup_steps = int(total_steps * self.warmup_ratio)
 
         self.scheduler = get_linear_schedule_with_warmup(
@@ -215,11 +218,12 @@ class ABSATrainer:
                 "lr": self.scheduler.get_last_lr()[0]
             })
 
-            if self.global_step % logging_steps == 0:
+            # step 0에서는 logging/eval/save 트리거 방지
+            if self.global_step > 0 and self.global_step % logging_steps == 0:
                 avg_loss = total_loss / num_batches
                 print(f"\n[Step {self.global_step}] Loss: {avg_loss:.4f}")
 
-            if eval_steps > 0 and self.global_step % eval_steps == 0:
+            if eval_steps > 0 and self.global_step > 0 and self.global_step % eval_steps == 0:
                 val_metrics = self.evaluate(self.val_loader)
                 print(f"\n[Step {self.global_step}] Val Metrics:")
                 print(f"  Sentiment Acc: {val_metrics['sentiment_accuracy']:.4f}")
@@ -227,8 +231,16 @@ class ABSATrainer:
                 print(f"  Aspect-Sentiment F1: {val_metrics['aspect_sentiment_f1_macro']:.4f}")
                 self.model.train()
 
-            if save_steps > 0 and self.global_step % save_steps == 0:
+            if save_steps > 0 and self.global_step > 0 and self.global_step % save_steps == 0:
                 self.save_checkpoint(is_best=False)
+
+        # leftover batch: gradient accumulation 나머지 그래디언트 flush
+        if gradient_accumulation_steps > 1 and num_batches % gradient_accumulation_steps != 0:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+            self.scheduler.step()
+            self.optimizer.zero_grad()
+            self.global_step += 1
 
         return {
             "loss": total_loss / num_batches,
