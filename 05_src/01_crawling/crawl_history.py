@@ -34,10 +34,16 @@ class CrawlHistory:
         self._load()
 
     def _load(self):
-        """JSON 파일에서 이력 로드 (없으면 빈 dict 유지)"""
+        """JSON 파일에서 이력 로드 (파싱 실패 시 백업 후 빈 dict로 시작)"""
         if os.path.exists(self.history_path):
-            with open(self.history_path, "r", encoding="utf-8") as f:
-                self._data = json.load(f)
+            try:
+                with open(self.history_path, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+            except (json.JSONDecodeError, ValueError) as e:
+                # 손상된 파일 백업 후 빈 상태로 시작
+                backup_path = self.history_path + ".corrupted"
+                os.replace(self.history_path, backup_path)
+                print(f"[경고] 이력 파일 파싱 실패 → 백업: {backup_path} ({e})")
 
     def is_new_product(self, product_code: str) -> bool:
         """이력에 없는 신규 제품이면 True"""

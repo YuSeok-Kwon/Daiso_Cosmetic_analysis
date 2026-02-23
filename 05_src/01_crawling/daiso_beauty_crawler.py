@@ -929,10 +929,30 @@ def main():
         logger.error(f"오류 발생: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
+        # 에러 시에도 수집된 데이터 긴급 저장
+        _save_intermediate(all_products, all_reviews, all_ingredients, prefix="emergency")
 
     finally:
         driver.quit()
         logger.info("브라우저 종료 완료")
+
+
+def _save_intermediate(products, reviews, ingredients, prefix="intermediate"):
+    """중간 저장: 수집된 데이터를 임시 CSV로 저장"""
+    os.makedirs("data", exist_ok=True)
+    date_str = get_date_string()
+    if products:
+        pd.DataFrame(products).to_csv(
+            f"data/{prefix}_products_{date_str}.csv", index=False, encoding="utf-8-sig"
+        )
+    if reviews:
+        pd.DataFrame(reviews).to_csv(
+            f"data/{prefix}_reviews_{date_str}.csv", index=False, encoding="utf-8-sig"
+        )
+    if ingredients:
+        pd.DataFrame(ingredients).to_csv(
+            f"data/{prefix}_ingredients_{date_str}.csv", index=False, encoding="utf-8-sig"
+        )
 
 
 def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True,
@@ -985,6 +1005,7 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True,
     all_ingredients = []
     seen_product_codes = set()
     stats = {"new": 0, "updated": 0, "skipped": 0}
+    crawled_count = 0  # 중간 저장 카운터
 
     try:
         for middle, middle_code, small_code, small_name in categories:
@@ -1063,16 +1084,20 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True,
 
                         stats["new"] += 1
 
+                    crawled_count += 1
+
+                    # 50개 제품마다 중간 저장 (에러 시 데이터 유실 방지)
+                    if crawled_count % 50 == 0:
+                        _save_intermediate(all_products, all_reviews, all_ingredients)
+                        if history:
+                            history.save()
+                        logger.info(f"[중간저장] {crawled_count}개 제품 처리 완료")
+
                     time.sleep(1)
 
                 except Exception as e:
                     logger.error(f"크롤링 실패: {link} — {e}")
                     continue
-
-        # 증분 모드: 이력 저장
-        if history:
-            history.save()
-            logger.info(f"크롤링 이력 저장 완료 (총 {history.product_count}개 제품)")
 
         logger.info(f"통계: 신규={stats['new']}, 업데이트={stats['updated']}, 스킵={stats['skipped']}")
 
@@ -1106,9 +1131,18 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True,
         logger.error(f"run_all 오류: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        # 에러 시에도 수집된 데이터 긴급 저장
+        _save_intermediate(all_products, all_reviews, all_ingredients, prefix="emergency")
         raise
 
     finally:
+        # 이력은 에러 여부와 관계없이 반드시 저장
+        if history:
+            try:
+                history.save()
+                logger.info(f"크롤링 이력 저장 완료 (총 {history.product_count}개 제품)")
+            except Exception as e:
+                logger.error(f"이력 저장 실패: {e}")
         driver.quit()
         logger.info("브라우저 종료 완료")
 
