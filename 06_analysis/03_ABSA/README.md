@@ -87,22 +87,75 @@
 | 단계 | 데이터 수 | 상태 |
 |------|----------|------|
 | GPT-4o Batch 라벨링 | 19,950개 | 완료 |
-| 최종 결과 | 28,981행 | 완료 (aspect별 펼침) |
+| 최종 결과 (aspect별 펼침) | 26,267행 | 완료 |
+| 리뷰 단위 그룹화 | 18,016 리뷰 | 완료 (mixed 29건 제거) |
+
+## 모델 아키텍처 (Option A)
+
+**Aspect별 4-class 통합 예측:** 각 aspect에 대해 `none/negative/neutral/positive` 직접 분류
+
+```
+KcELECTRA Encoder (768-dim)
+        │ [CLS]
+   ┌────┴────┐
+   ▼         ▼
+Sentiment  Aspect-Sentiment
+[B, 3]     [B, 11, 4]
+```
+
+| 라벨 ID | 의미 | 설명 |
+|---------|------|------|
+| 0 | none | 해당 aspect 미존재 |
+| 1 | negative | 부정 |
+| 2 | neutral | 중립 |
+| 3 | positive | 긍정 |
+
+**데이터 전처리 규칙:**
+- `review_sentiment == "mixed"` → 리뷰 제거 (29건)
+- `aspect == "미분류"` → 항상 `neutral(2)`로 강제
+
+**불균형 처리:**
+- CrossEntropyLoss + class weight (역빈도 가중치)
+- 학습 후 val set에서 per-aspect none-threshold 자동 튜닝
 
 ## 사용법
 
 ```bash
 # 환경 설정
+conda activate py_study  # torch, transformers, sklearn 필요
+
+# 패키지 경로 설정
+export PYTHONPATH=$(pwd)
+
+# 모델 학습
+python -m RQ_absa.train \
+    --csv_path 02_processed_data/interim/v4/absa_analysis_ready.csv \
+    --model_name beomi/KcELECTRA-base \
+    --num_epochs 10 \
+    --batch_size 32
+
+# 추론 실행 (CSV 기반)
+python -m RQ_absa.inference \
+    --input_path /path/to/reviews.csv \
+    --output_path /path/to/results.csv \
+    --model_path 06_models/checkpoints/best_model.pt
+
+# OpenAI 배치 라벨링 (기존)
 cp config/.env.example config/.env
-# OPENAI_API_KEY 설정
-
-# 의존성 설치
-pip install -r requirements.txt
-
-# 배치 라벨링 실행
 python 07_scripts/batch_labeling.py
 ```
 
+## 주요 소스 파일
+
+| 파일 | 역할 |
+|------|------|
+| `05_src/config.py` | 라벨 정의, 학습/추론/threshold 설정 |
+| `05_src/dataset.py` | CSV → 리뷰 단위 그룹화 → Dataset 생성 |
+| `05_src/model.py` | MultiTaskABSAModel (KcELECTRA + 2 heads) |
+| `05_src/train.py` | 학습 루프, threshold 자동 튜닝 |
+| `05_src/evaluation.py` | 4-class F1, detection F1, per-aspect F1 |
+| `05_src/inference.py` | 배치 추론, DataFrame 추론, BigQuery 연동 |
+
 ## 생성일
 
-2025-02-16
+2025-02-16 (최종 수정: 2026-02-23)

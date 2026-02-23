@@ -226,85 +226,123 @@
 
 ---
 
-### 8단계: 모델 선별
+### 8단계: 모델 선별 및 아키텍처 설계
 
-**후보 모델 비교:**
+**선정 모델:** KcELECTRA-base (`beomi/KcELECTRA-base`)
+- KoBERT 대비 4배 빠른 학습, 적은 데이터로도 우수한 성능
+- 한국어 리뷰 텍스트에 최적화된 사전학습
 
-| 모델 | 장점 | 단점 | 추천도 |
-|------|------|------|--------|
-| **LSTM/BiLSTM** | 구조 단순, 학습 목적 적합 | 긴 문장 약함, 느림 | ⭐⭐ |
-| **KoBERT** | 한국어 특화, 문맥 이해 강함 | GPU 필요, 무거움 | ⭐⭐⭐⭐ |
-| **KoELECTRA** | 가볍고 빠름, 성능 우수 | - | ⭐⭐⭐⭐⭐ |
-| **LightGBM + TF-IDF** | 매우 빠름, CPU 가능 | 문맥 이해 약함 | ⭐⭐⭐ |
+#### 모델 아키텍처: Option A (Aspect별 4-class 통합)
 
-**상세 비교:**
+**핵심 아이디어:** 기존의 "전체 감성 3-class + aspect 이진 탐지" 구조에서,
+**각 aspect별로 감성을 직접 예측**하는 구조로 재설계.
 
-#### LSTM / BiLSTM
 ```
-구조: Embedding → BiLSTM → Attention → Dense → Output
-
-장점:
-- 순차 데이터 처리에 적합
-- 구조가 단순하여 이해하기 쉬움
-- 학습 목적/교육용으로 적합
-
-단점:
-- 긴 시퀀스에서 기울기 소실 문제
-- 병렬 처리 불가 → 학습 느림
-- Transformer 대비 성능 열세
-
-예상 성능: 45~50%
+예시: "발림성은 좋은데 향이 별로"
+  → 사용감/성능 = positive
+  → 재질/냄새 = negative
+  → 나머지 = none (미존재)
 ```
 
-#### KoBERT
+**아키텍처:**
 ```
-구조: KoBERT Encoder → Pooling → Dense → Output
-
-장점:
-- 한국어 사전학습 모델
-- 양방향 문맥 이해
-- 형태소 단위 토크나이징
-
-단점:
-- GPU 메모리 많이 필요 (8GB+)
-- 추론 속도 느림
-- 모델 크기 큼 (약 350MB)
-
-예상 성능: 52~55%
-```
-
-#### KoELECTRA (추천)
-```
-구조: KoELECTRA Encoder → Pooling → Dense → Output
-
-장점:
-- KoBERT 대비 4배 빠른 학습
-- 적은 데이터로도 좋은 성능
-- 경량화 버전 존재 (small, base)
-
-단점:
-- KoBERT 대비 약간 낮은 성능 (일부 태스크)
-
-예상 성능: 50~55%
+┌─────────────────────────────────────┐
+│  KcELECTRA Encoder (768-dim)        │
+│  beomi/KcELECTRA-base               │
+└──────────────┬──────────────────────┘
+               │ [CLS] pooling
+       ┌───────┴───────┐
+       ▼               ▼
+┌──────────────┐ ┌──────────────────┐
+│  Sentiment   │ │  Aspect-Sentiment│
+│  Head (보조) │ │  Head (메인)     │
+│  Linear→3    │ │  Linear→44       │
+│  [B, 3]      │ │  reshape [B,11,4]│
+└──────────────┘ └──────────────────┘
+  neg/neu/pos     aspect별 none/neg/neu/pos
 ```
 
-#### LightGBM + TF-IDF
+| 구성요소 | 설명 |
+|----------|------|
+| Encoder | KcELECTRA-base (768-dim hidden) |
+| Sentiment Head | `Linear(768 → 3)` — 리뷰 전체 감성 (보조 태스크) |
+| Aspect Head | `Linear(768 → 44)` → `reshape [B, 11, 4]` — aspect별 4-class |
+| Loss | `CrossEntropyLoss` (class weight 적용), Sentiment + Aspect 가중합 |
+| 출력 | aspect별 `none(0)/negative(1)/neutral(2)/positive(3)` |
+
+**Aspect-Sentiment 라벨 체계:**
+| ID | 라벨 | 의미 |
+|----|------|------|
+| 0 | none | 해당 aspect 미존재 |
+| 1 | negative | 부정 |
+| 2 | neutral | 중립 |
+| 3 | positive | 긍정 |
+
+#### 데이터 전처리
+
+**입력 데이터:** `absa_analysis_ready.csv` (26,267행, aspect-level)
+
+**그룹화 프로세스:**
 ```
-구조: TF-IDF Vectorizer → LightGBM Classifier
-
-장점:
-- CPU만으로 빠른 학습/추론
-- 해석 가능 (Feature Importance)
-- 배포 간단
-
-단점:
-- 단어 순서/문맥 무시
-- OOV(미등록 단어) 처리 어려움
-
-예상 성능: 40~48%
+CSV 행 단위 (review_id, aspect, aspect_sentiment)
+       ↓ load_and_group_csv()
+리뷰 단위 그룹화 → 11-dim 4-class 라벨
+       ↓
+18,016 리뷰 (mixed 29건 제거)
 ```
 
-**최종 추천:** KoELECTRA (성능 + 속도 균형)
+**전처리 규칙:**
+- `review_sentiment == "mixed"` → 해당 리뷰 제거 (29건)
+- `aspect == "미분류"` → 항상 `neutral(2)`로 강제 매핑
+- 층화 샘플링 기반 Train/Val/Test 분할 (70/15/15)
+
+| 분할 | 리뷰 수 | 비율 |
+|------|---------|------|
+| Train | 12,611 | 70% |
+| Val | 2,703 | 15% |
+| Test | 2,702 | 15% |
+
+#### 클래스 불균형 처리
+
+**문제:** `none` 클래스가 대부분의 aspect에서 90% 이상 차지
+
+| 전략 | 설명 |
+|------|------|
+| Class Weight | aspect 4-class에 대한 역빈도 가중치 자동 계산 |
+| Focal Loss | 옵션: `focal_gamma=2.0` 으로 쉬운 샘플 가중치 감소 |
+| Per-Aspect None-Threshold | 학습 후 val set에서 aspect별 최적 threshold grid search |
+
+**None-Threshold 튜닝:**
+```
+각 aspect별로 P(none) >= threshold → none 예측
+                  < threshold → argmax(neg/neu/pos) 예측
+
+Grid search: threshold ∈ [0.1, 0.95], step=0.05
+최적화 기준: aspect별 4-class macro F1
+결과 저장: none_thresholds.json (모델 체크포인트 옆)
+```
+
+#### 평가 메트릭
+
+| 메트릭 | 설명 |
+|--------|------|
+| Sentiment F1 (3-class macro) | 리뷰 전체 감성 분류 성능 |
+| Aspect-Sentiment F1 (4-class macro) | aspect별 4-class 분류 성능 (메인 지표) |
+| Aspect Detection F1 | none vs not-none 이진 분류 성능 |
+| Per-Aspect F1 | 11개 aspect 각각의 F1 |
+
+#### 추론 출력 형식
+
+```json
+{
+    "sentiment": "positive",
+    "sentiment_score": 0.85,
+    "aspect_sentiments": [
+        {"aspect": "사용감/성능", "sentiment": "positive", "confidence": 0.92},
+        {"aspect": "재질/냄새", "sentiment": "negative", "confidence": 0.78}
+    ]
+}
+```
 
 ---
 
@@ -400,15 +438,21 @@
 
 ---
 
-## 다음 단계
+## 진행 상황
 
-1. [x] 배치 작업 완료
-2. [x] 결과 파일 병합
-3. [ ] 샘플 검수 (100~200개)
-4. [ ] ML 모델 학습 (KoELECTRA 추천)
-5. [ ] 전체 데이터 적용
-6. [ ] 연착륙 상품 분석
+1. [x] 배치 작업 완료 (GPT-4o Batch API)
+2. [x] 결과 파일 병합 → `absa_analysis_ready.csv`
+3. [x] 샘플 검수 및 EDA 완료
+4. [x] 모델 아키텍처 설계 (Option A: aspect별 4-class)
+5. [x] 소스 코드 구현 (config, dataset, model, train, evaluation, inference)
+6. [x] 데이터 전처리 규칙 확정 (mixed 제거, 미분류 neutral 강제)
+7. [ ] KcELECTRA 모델 학습 실행
+8. [ ] Val set에서 per-aspect none-threshold 튜닝
+9. [ ] Test set 최종 평가
+10. [ ] 전체 리뷰 추론 (300,000개)
+11. [ ] 연착륙 상품 분석
 
 ---
 
 *문서 작성일: 2026-02-14*
+*최종 수정일: 2026-02-23*
