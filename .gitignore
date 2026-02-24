@@ -4,6 +4,7 @@ data/
 *.parquet
 *.json
 *.xlsx
+*.docx
 
 # 예외: Data 디렉토리의 ERD 문서는 추적
 !Data/
@@ -59,5 +60,7 @@ cache/
 # Backup files
 *.bak
 
-# Temp folders
-땃쥐/
+# Model checkpoints
+*.pt
+*.pth
+*.bin
