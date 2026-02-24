@@ -19,7 +19,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Dict
 
-from RQ_absa.s5_model import MultiTaskABSAModel
+from RQ_absa.s5_model import MultiTaskABSAModel, get_best_device
 from RQ_absa.s1_config import (
     ASPECT_LABELS,
     SENTIMENT_ID_TO_LABEL,
@@ -57,14 +57,19 @@ class ABSAInference:
         self.polar_threshold = polar_threshold  # polar 확신 기준 (neutral 복원용)
 
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device(get_best_device())
         else:
             self.device = torch.device(device)
 
         self.model.to(self.device)
         self.model.eval()
 
-        self.aspect_labels = aspect_labels or ASPECT_LABELS
+        # aspect_labels 우선순위: 명시 전달 > checkpoint(model.aspect_labels) > config
+        self.aspect_labels = (
+            aspect_labels
+            or getattr(model, "aspect_labels", None)
+            or list(ASPECT_LABELS)
+        )
         self.sentiment_labels = sentiment_labels or SENTIMENT_ID_TO_LABEL
         self.aspect_sentiment_labels = aspect_sentiment_labels or ASPECT_SENTIMENT_ID_TO_LABEL
 
@@ -347,14 +352,18 @@ class ABSAInference:
                 print(f"  Count: {len(ambiguous_df):,}")
 
 
-def _load_none_thresholds(model_path: Path) -> tuple:
+def _load_none_thresholds(model_path: Path, model=None) -> tuple:
     """모델 체크포인트와 같은 디렉토리에서 none_thresholds.json 로드.
+
+    Args:
+        model_path: 체크포인트 경로
+        model: 로드된 모델 (aspect 수 검증용, None이면 config 기준)
 
     Returns:
         (none_thresholds, polar_threshold) — polar_threshold는 없으면 None
 
     Raises:
-        ValueError: threshold 길이가 현재 ASPECT_LABELS와 불일치할 때
+        ValueError: threshold 길이가 모델의 aspect 수와 불일치할 때
     """
     import json
     threshold_path = Path(model_path).parent / "none_thresholds.json"
@@ -364,13 +373,14 @@ def _load_none_thresholds(model_path: Path) -> tuple:
         thresholds = np.array(data["thresholds"])
         polar_threshold = data.get("polar_threshold")
 
-        # 길이 K 검증
-        expected_k = len(ASPECT_LABELS)
+        # 길이 K 검증: model.aspect_labels > config ASPECT_LABELS
+        model_aspects = getattr(model, "aspect_labels", None) if model else None
+        expected_k = len(model_aspects) if model_aspects else len(ASPECT_LABELS)
         if len(thresholds) != expected_k:
             raise ValueError(
                 f"Threshold 길이 불일치: json={len(thresholds)}, "
-                f"ASPECT_LABELS={expected_k}. "
-                f"체크포인트와 config의 aspect 수가 다릅니다. "
+                f"model aspects={expected_k}. "
+                f"체크포인트와 threshold의 aspect 수가 다릅니다. "
                 f"threshold를 재튜닝하거나 config를 확인하세요."
             )
 
@@ -403,7 +413,7 @@ def run_inference_on_reviews(
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = load_model(checkpoint_path=model_path, model_name=model_name)
 
-    none_thresholds, polar_threshold = _load_none_thresholds(model_path)
+    none_thresholds, polar_threshold = _load_none_thresholds(model_path, model=model)
 
     inference = ABSAInference(
         model=model,
@@ -492,7 +502,7 @@ def run_inference_from_bigquery(
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = load_model(checkpoint_path=model_path, model_name=model_name)
 
-    none_thresholds, polar_threshold = _load_none_thresholds(model_path)
+    none_thresholds, polar_threshold = _load_none_thresholds(model_path, model=model)
 
     inference = ABSAInference(
         model=model,

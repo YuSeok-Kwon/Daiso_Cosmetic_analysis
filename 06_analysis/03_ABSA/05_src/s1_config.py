@@ -130,6 +130,7 @@ THRESHOLD_TUNING_CONFIG = {
     "metric": "fbeta",             # F0.5 (precision 가중) — 과다 검출 억제
     "beta": 0.5,                   # precision 4배 가중
     "default_threshold": 0.5,      # 튜닝 전 기본값
+    "polar_threshold": 0.55,       # neutral 복원 기준 (None이면 polar 미사용)
 }
 
 # Golden set split configuration (Stage 2: dev/test 분할)

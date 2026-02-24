@@ -13,7 +13,7 @@ from tqdm import tqdm
 from typing import Dict, Optional
 import json
 
-from RQ_absa.s5_model import MultiTaskABSAModel, compute_class_weights, compute_aspect_class_weights
+from RQ_absa.s5_model import MultiTaskABSAModel, compute_class_weights, compute_aspect_class_weights, get_best_device
 from RQ_absa.s7_evaluation import (
     ABSAEvaluator,
     collect_predictions,
@@ -54,7 +54,7 @@ class ABSATrainer:
         self.checkpoint_dir = checkpoint_dir
 
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device(get_best_device())
         else:
             self.device = torch.device(device)
 
@@ -332,11 +332,13 @@ class ABSATrainer:
         search_range: tuple = (0.1, 0.95),
         search_step: float = 0.05,
         metric: str = "f1",
-        beta: float = 0.5
+        beta: float = 0.5,
+        polar_threshold: float = None,
     ):
         """
         Val set에서 aspect별 최적 none-threshold를 grid search.
         결과를 self.none_thresholds에 저장하고, 체크포인트에도 포함.
+        polar_threshold가 주어지면 json에 함께 저장 (inference에서 자동 로드).
         """
         print("\nCollecting val predictions for threshold tuning...")
         results = collect_predictions(self.val_loader, self.model, self.device)
@@ -362,9 +364,14 @@ class ABSATrainer:
                 "default_f1": tuning_result["default_f1"],
                 "tuned_f1": tuning_result["tuned_f1"],
             }
+            # polar_threshold가 있으면 함께 저장 → inference에서 자동 로드
+            if polar_threshold is not None:
+                threshold_data["polar_threshold"] = polar_threshold
             with open(threshold_path, "w", encoding="utf-8") as f:
                 json.dump(threshold_data, f, indent=2, ensure_ascii=False)
             print(f"Saved thresholds to: {threshold_path}")
+            if polar_threshold is not None:
+                print(f"  polar_threshold={polar_threshold} 포함")
 
     def _load_best_and_tune_thresholds(self):
         """
@@ -378,6 +385,7 @@ class ABSATrainer:
             "search_step": THRESHOLD_TUNING_CONFIG["search_step"],
             "metric": THRESHOLD_TUNING_CONFIG["metric"],
             "beta": THRESHOLD_TUNING_CONFIG.get("beta", 0.5),
+            "polar_threshold": THRESHOLD_TUNING_CONFIG.get("polar_threshold"),
         }
 
         if self.checkpoint_dir:

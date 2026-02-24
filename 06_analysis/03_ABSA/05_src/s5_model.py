@@ -17,6 +17,15 @@ from typing import Optional
 from RQ_absa.s1_config import ASPECT_LABELS
 
 
+def get_best_device() -> str:
+    """CUDA > MPS > CPU 순으로 최적 디바이스 반환."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class FocalLoss(nn.Module):
     """
     Focal Loss for imbalanced classification.
@@ -308,7 +317,7 @@ def load_model(
     num_sentiment_labels: int = 3,
     num_aspect_labels: int = None,
     num_aspect_sentiment_classes: int = 4,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = None,
 ):
     """모델 체크포인트 로드.
 
@@ -317,6 +326,9 @@ def load_model(
     2) checkpoint의 label_meta.aspect_labels 길이
     3) 현재 s1_config.ASPECT_LABELS 길이 (fallback)
     """
+    if device is None:
+        device = get_best_device()
+
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # num_aspect_labels 자동 결정
@@ -343,8 +355,13 @@ def load_model(
     model.to(device)
     model.eval()
 
+    # checkpoint의 aspect_labels를 모델에 부착 (source of truth)
+    label_meta = checkpoint.get("label_meta", {})
+    ckpt_aspects = label_meta.get("aspect_labels")
+    model.aspect_labels = ckpt_aspects if ckpt_aspects else list(ASPECT_LABELS)
+
     print(f"Loaded model from: {checkpoint_path}")
-    print(f"  num_aspect_labels: {num_aspect_labels}")
+    print(f"  num_aspect_labels: {num_aspect_labels}, aspects: {model.aspect_labels}")
     if "epoch" in checkpoint:
         print(f"  Epoch: {checkpoint['epoch']}")
     if "val_metrics" in checkpoint:
