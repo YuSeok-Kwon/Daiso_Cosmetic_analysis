@@ -3,7 +3,7 @@ Multi-task ABSA model (Option A: aspect별 4-class 통합)
 
 출력 구조:
 - sentiment_logits: [B, 3] (리뷰 전체 감성, 보조 태스크)
-- aspect_logits: [B, 11, 4] (aspect별 none/positive/neutral/negative)
+- aspect_logits: [B, N, 4] (aspect별 none/positive/neutral/negative)
 
 라벨 매핑 (s1_config 기준):
   0=none, 1=positive, 2=neutral, 3=negative
@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoConfig
 from typing import Optional
+
+from RQ_absa.s1_config import ASPECT_LABELS
 
 
 class FocalLoss(nn.Module):
@@ -65,7 +67,7 @@ class MultiTaskABSAModel(nn.Module):
         self,
         model_name: str = "beomi/KcELECTRA-base",
         num_sentiment_labels: int = 3,
-        num_aspect_labels: int = 11,
+        num_aspect_labels: int = len(ASPECT_LABELS),
         num_aspect_sentiment_classes: int = 4,
         dropout: float = 0.1,
         sentiment_class_weights: Optional[torch.Tensor] = None,
@@ -304,11 +306,32 @@ def load_model(
     checkpoint_path: str,
     model_name: str = "beomi/KcELECTRA-base",
     num_sentiment_labels: int = 3,
-    num_aspect_labels: int = 11,
+    num_aspect_labels: int = None,
     num_aspect_sentiment_classes: int = 4,
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 ):
-    """모델 체크포인트 로드"""
+    """모델 체크포인트 로드.
+
+    num_aspect_labels 결정 우선순위:
+    1) 명시적으로 전달된 값
+    2) checkpoint의 label_meta.aspect_labels 길이
+    3) 현재 s1_config.ASPECT_LABELS 길이 (fallback)
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # num_aspect_labels 자동 결정
+    if num_aspect_labels is None:
+        label_meta = checkpoint.get("label_meta", {})
+        ckpt_aspects = label_meta.get("aspect_labels")
+        if ckpt_aspects is not None:
+            num_aspect_labels = len(ckpt_aspects)
+            if num_aspect_labels != len(ASPECT_LABELS):
+                print(f"  NOTE: checkpoint aspects({num_aspect_labels}) != "
+                      f"config aspects({len(ASPECT_LABELS)}), "
+                      f"using checkpoint value")
+        else:
+            num_aspect_labels = len(ASPECT_LABELS)
+
     model = MultiTaskABSAModel(
         model_name=model_name,
         num_sentiment_labels=num_sentiment_labels,
@@ -316,15 +339,15 @@ def load_model(
         num_aspect_sentiment_classes=num_aspect_sentiment_classes
     )
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
 
     print(f"Loaded model from: {checkpoint_path}")
+    print(f"  num_aspect_labels: {num_aspect_labels}")
     if "epoch" in checkpoint:
-        print(f"Epoch: {checkpoint['epoch']}")
+        print(f"  Epoch: {checkpoint['epoch']}")
     if "val_metrics" in checkpoint:
-        print(f"Val metrics: {checkpoint['val_metrics']}")
+        print(f"  Val metrics: {checkpoint['val_metrics']}")
 
     return model

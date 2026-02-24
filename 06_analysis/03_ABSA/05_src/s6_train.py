@@ -331,7 +331,8 @@ class ABSATrainer:
         self,
         search_range: tuple = (0.1, 0.95),
         search_step: float = 0.05,
-        metric: str = "f1"
+        metric: str = "f1",
+        beta: float = 0.5
     ):
         """
         Val set에서 aspect별 최적 none-threshold를 grid search.
@@ -346,7 +347,8 @@ class ABSATrainer:
             aspect_masks=results.get("aspect_masks"),
             search_range=search_range,
             search_step=search_step,
-            metric=metric
+            metric=metric,
+            beta=beta,
         )
 
         self.none_thresholds = tuning_result["thresholds"]
@@ -366,17 +368,26 @@ class ABSATrainer:
 
     def _load_best_and_tune_thresholds(self):
         """
-        Best model을 로드한 뒤 threshold 튜닝.
+        Best model을 로드한 뒤 THRESHOLD_TUNING_CONFIG 기준으로 threshold 튜닝.
         튜닝된 threshold를 best_model.pt에도 포함시킴.
         """
+        from RQ_absa.s1_config import THRESHOLD_TUNING_CONFIG
+
+        tune_kwargs = {
+            "search_range": THRESHOLD_TUNING_CONFIG["search_range"],
+            "search_step": THRESHOLD_TUNING_CONFIG["search_step"],
+            "metric": THRESHOLD_TUNING_CONFIG["metric"],
+            "beta": THRESHOLD_TUNING_CONFIG.get("beta", 0.5),
+        }
+
         if self.checkpoint_dir:
             best_path = self.checkpoint_dir / "best_model.pt"
             if best_path.exists():
-                ckpt = torch.load(best_path, map_location=self.device)
+                ckpt = torch.load(best_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(ckpt["model_state_dict"])
                 print(f"Loaded best model for threshold tuning: {best_path}")
 
-                self.tune_thresholds()
+                self.tune_thresholds(**tune_kwargs)
 
                 # threshold를 best_model.pt에도 저장
                 if self.none_thresholds is not None:
@@ -386,7 +397,7 @@ class ABSATrainer:
                 return
 
         # best_model.pt가 없으면 현재 모델로 튜닝
-        self.tune_thresholds()
+        self.tune_thresholds(**tune_kwargs)
 
     def fine_tune(
         self,
@@ -516,7 +527,7 @@ class ABSATrainer:
             print(f"Saved checkpoint to: {path}")
 
     def load_checkpoint(self, checkpoint_path: Path):
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -547,7 +558,7 @@ def create_model_with_class_weights(
     train_dataset,
     model_name: str = "beomi/KcELECTRA-base",
     num_sentiment_labels: int = 3,
-    num_aspect_labels: int = 11,
+    num_aspect_labels: int = None,
     num_aspect_sentiment_classes: int = 4,
     dropout: float = 0.1,
     use_class_weight: bool = True,
@@ -558,6 +569,10 @@ def create_model_with_class_weights(
     학습 데이터에서 class weights를 계산하여 모델 생성.
     sentiment + aspect 둘 다 가중치 적용.
     """
+    from RQ_absa.s1_config import ASPECT_LABELS as _AL
+    if num_aspect_labels is None:
+        num_aspect_labels = len(_AL)
+
     sentiment_class_weights = None
     aspect_class_weights = None
 

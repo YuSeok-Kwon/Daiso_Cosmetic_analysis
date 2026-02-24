@@ -327,20 +327,22 @@ def tune_none_thresholds(
     aspect_labels_list: List[str] = None,
     search_range: tuple = (0.1, 0.95),
     search_step: float = 0.05,
-    metric: str = "f1"
+    metric: str = "f1",
+    beta: float = 0.5,
 ) -> dict:
     """
     Validation set에서 aspect별 최적 none-threshold를 grid search.
     aspect_masks가 제공되면 mask=1인 셀만 사용하여 튜닝.
 
     Args:
-        aspect_probs: [N, 11, 4] softmax 확률
-        aspect_labels: [N, 11] 정답 (각 값 0~3)
-        aspect_masks: [N, 11] (1=사용, 0=제외, optional)
+        aspect_probs: [N, K, 4] softmax 확률
+        aspect_labels: [N, K] 정답 (각 값 0~3)
+        aspect_masks: [N, K] (1=사용, 0=제외, optional)
         aspect_labels_list: aspect 이름 리스트
         search_range: (min, max) threshold 범위
         search_step: grid search 간격
-        metric: 최적화 대상 ("f1" or "detection_f1")
+        metric: 최적화 대상 ("f1", "detection_f1", "fbeta", "f0.5")
+        beta: F-beta에서 beta 값 (precision 가중: beta < 1)
     """
     if aspect_labels_list is None:
         from RQ_absa.s1_config import ASPECT_LABELS
@@ -395,7 +397,16 @@ def tune_none_thresholds(
             binary_labels = (true_labels > 0).astype(int)
             det_f1 = f1_score(binary_labels, binary_preds, zero_division=0)
 
-            score = f1_4class if metric == "f1" else det_f1
+            if metric in ("fbeta", "f0.5"):
+                det_prec = precision_score(binary_labels, binary_preds, zero_division=0)
+                det_rec = recall_score(binary_labels, binary_preds, zero_division=0)
+                denom = (beta**2 * det_prec + det_rec)
+                fbeta_val = (1 + beta**2) * det_prec * det_rec / denom if denom > 0 else 0.0
+                score = fbeta_val
+            elif metric == "detection_f1":
+                score = det_f1
+            else:  # "f1"
+                score = f1_4class
 
             if score > best_score:
                 best_score = score
@@ -550,3 +561,109 @@ def evaluate_test_set(
     )
 
     return metrics
+
+
+def apply_thresholds_with_polar(
+    aspect_probs: np.ndarray,
+    none_thresholds: np.ndarray,
+    polar_threshold: float = 0.6,
+) -> np.ndarray:
+    """
+    3단계 threshold 적용:
+    (1) P(none) >= t_none → 0 (none)
+    (2) max(P(pos), P(neg)) < t_polar → 2 (neutral)
+    (3) else → argmax(pos, neg) 중 선택 (1 또는 3)
+
+    Args:
+        aspect_probs: [N, K, 4] softmax 확률
+        none_thresholds: [K] aspect별 none-threshold
+        polar_threshold: polar 확신 기준 (pos/neg 최대값이 이 미만이면 neutral)
+
+    Returns:
+        aspect_preds: [N, K] (각 값 0~3)
+    """
+    N, num_aspects, _ = aspect_probs.shape
+    preds = np.zeros((N, num_aspects), dtype=int)
+
+    for j in range(num_aspects):
+        p_none = aspect_probs[:, j, 0]
+        p_pos = aspect_probs[:, j, 1]
+        p_neg = aspect_probs[:, j, 3]
+        threshold = none_thresholds[j]
+
+        # Step 1: none 판단
+        is_none = p_none >= threshold
+
+        # Step 2: non-none 중에서 polar 확신 부족 → neutral
+        max_polar = np.maximum(p_pos, p_neg)
+        is_weak_polar = max_polar < polar_threshold
+
+        # Step 3: pos vs neg 중 argmax
+        polar_pred = np.where(p_pos >= p_neg, 1, 3)  # 1=positive, 3=negative
+
+        # 조합: none > neutral(weak polar) > polar pred
+        preds[:, j] = np.where(
+            is_none, 0,
+            np.where(is_weak_polar, 2, polar_pred)
+        )
+
+    return preds
+
+
+def tune_polar_threshold(
+    aspect_probs: np.ndarray,
+    aspect_labels: np.ndarray,
+    none_thresholds: np.ndarray,
+    aspect_masks: np.ndarray = None,
+    search_range: tuple = (0.3, 0.8),
+    search_step: float = 0.05,
+) -> dict:
+    """
+    Golden dev set에서 polar_threshold를 grid search.
+    '언급된 셀'(GT label > 0)의 sentiment macro F1을 최적화.
+
+    Args:
+        aspect_probs: [N, K, 4]
+        aspect_labels: [N, K]
+        none_thresholds: [K]
+        aspect_masks: [N, K] (optional)
+        search_range: (min, max)
+        search_step: grid search 간격
+
+    Returns:
+        {"polar_threshold": float, "best_f1": float, "results": list}
+    """
+    candidates = np.arange(search_range[0], search_range[1] + search_step / 2, search_step)
+
+    best_t = 0.6
+    best_f1 = -1.0
+    results = []
+
+    print("\n" + "=" * 60)
+    print("POLAR THRESHOLD TUNING")
+    print("=" * 60)
+
+    for t in candidates:
+        preds = apply_thresholds_with_polar(aspect_probs, none_thresholds, polar_threshold=t)
+
+        # 언급된 셀만 (GT label > 0)
+        mentioned = aspect_labels > 0
+        if aspect_masks is not None:
+            mentioned = mentioned & (aspect_masks.astype(bool))
+
+        fp = preds[mentioned]
+        fl = aspect_labels[mentioned]
+
+        macro_f1 = f1_score(fl, fp, average="macro", zero_division=0)
+        results.append({"polar_threshold": round(t, 2), "mentioned_macro_f1": round(macro_f1, 4)})
+
+        if macro_f1 > best_f1:
+            best_f1 = macro_f1
+            best_t = t
+
+        print(f"  polar_threshold={t:.2f}  mentioned_macro_F1={macro_f1:.4f}")
+
+    print(f"\n  Best: polar_threshold={best_t:.2f}  F1={best_f1:.4f}")
+    print("=" * 60)
+
+    return {"polar_threshold": round(best_t, 2), "best_f1": round(best_f1, 4), "results": results}
