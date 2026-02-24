@@ -24,8 +24,9 @@ from RQ_absa.s1_config import (
     ASPECT_LABELS,
     SENTIMENT_ID_TO_LABEL,
     ASPECT_SENTIMENT_ID_TO_LABEL,
+    KEYWORD_GATE_CONFIG,
 )
-from RQ_absa.s7_evaluation import apply_none_thresholds
+from RQ_absa.s7_evaluation import apply_none_thresholds, apply_thresholds_with_polar
 
 
 class ABSAInference:
@@ -45,13 +46,15 @@ class ABSAInference:
         batch_size: int = 128,
         ambiguous_sentiment_threshold: float = 0.6,
         none_thresholds: np.ndarray = None,
+        polar_threshold: float = None,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.batch_size = batch_size
         self.ambiguous_sentiment_threshold = ambiguous_sentiment_threshold
-        self.none_thresholds = none_thresholds  # [11] per-aspect threshold
+        self.none_thresholds = none_thresholds  # [K] per-aspect threshold
+        self.polar_threshold = polar_threshold  # polar 확신 기준 (neutral 복원용)
 
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,6 +73,8 @@ class ABSAInference:
                   f"min={self.none_thresholds.min():.2f}, "
                   f"max={self.none_thresholds.max():.2f}, "
                   f"mean={self.none_thresholds.mean():.2f}")
+            if self.polar_threshold is not None:
+                print(f"Using polar_threshold={self.polar_threshold:.2f} (neutral 복원)")
         else:
             print("Using default argmax (no threshold tuning)")
 
@@ -111,8 +116,12 @@ class ABSAInference:
             aspect_probs = torch.softmax(outputs["aspect_logits"], dim=-1)  # [B, 11, 4]
             aspect_probs_np = aspect_probs.cpu().numpy()
 
-            # Per-aspect threshold 적용
-            if self.none_thresholds is not None:
+            # Per-aspect threshold 적용 (polar threshold가 있으면 3단계 threshold)
+            if self.none_thresholds is not None and self.polar_threshold is not None:
+                aspect_preds_np = apply_thresholds_with_polar(
+                    aspect_probs_np, self.none_thresholds, self.polar_threshold
+                )
+            elif self.none_thresholds is not None:
                 aspect_preds_np = apply_none_thresholds(aspect_probs_np, self.none_thresholds)
             else:
                 aspect_preds_np = np.argmax(aspect_probs_np, axis=-1)
@@ -126,12 +135,48 @@ class ABSAInference:
                 "aspect_probs": aspect_probs_np,
             }
 
+    def _apply_keyword_gate(
+        self, texts: List[str], aspect_preds: np.ndarray
+    ) -> np.ndarray:
+        """키워드 게이트: non-none 예측이지만 키워드 미포함 시 none(0)으로 override.
+
+        Args:
+            texts: [N] 리뷰 텍스트 리스트
+            aspect_preds: [N, K] aspect 예측 (0=none, 1=pos, 2=neu, 3=neg)
+
+        Returns:
+            aspect_preds: [N, K] 키워드 게이트 적용 후
+        """
+        gated = aspect_preds.copy()
+        gate_count = 0
+
+        for aspect_name, keywords in KEYWORD_GATE_CONFIG.items():
+            if aspect_name not in self.aspect_labels:
+                continue
+            j = self.aspect_labels.index(aspect_name)
+            keywords_lower = [kw.lower() for kw in keywords]
+
+            for i, text in enumerate(texts):
+                if gated[i, j] == 0:  # 이미 none이면 스킵
+                    continue
+                text_lower = str(text).lower()
+                if not any(kw in text_lower for kw in keywords_lower):
+                    gated[i, j] = 0  # 키워드 미포함 → none으로 override
+                    gate_count += 1
+
+        if gate_count > 0:
+            print(f"  Keyword gate: {gate_count}건 override (non-none → none)")
+
+        return gated
+
     def _extract_aspect_sentiments(
         self, aspect_preds: np.ndarray, aspect_probs: np.ndarray
     ) -> List[List[Dict]]:
         """
-        aspect_preds [N, 11]에서 none(0)이 아닌 것만 추출하여
+        aspect_preds [N, K]에서 none(0)이 아닌 것만 추출하여
         [{aspect, sentiment, confidence}, ...] 형태로 반환.
+
+        미분류 후처리: 10개 aspect 모두 none이면 "미분류/neutral"을 파생 생성.
         """
         results = []
         for i in range(len(aspect_preds)):
@@ -149,6 +194,15 @@ class ABSAInference:
                     "sentiment": sentiment_name,
                     "confidence": confidence,
                 })
+
+            # 미분류 후처리: 모든 aspect가 none이면 "미분류" 파생
+            if not review_aspects:
+                review_aspects.append({
+                    "aspect": "미분류",
+                    "sentiment": "neutral",
+                    "confidence": 0.0,
+                })
+
             results.append(review_aspects)
         return results
 
@@ -186,6 +240,10 @@ class ABSAInference:
         all_sentiment_confidence = np.array(all_sentiment_confidence)
         all_aspect_preds = np.array(all_aspect_preds)
         all_aspect_probs = np.array(all_aspect_probs)
+
+        # 키워드 게이트 적용 (non-none이지만 키워드 미포함 → none override)
+        if KEYWORD_GATE_CONFIG:
+            all_aspect_preds = self._apply_keyword_gate(texts, all_aspect_preds)
 
         # aspect별 sentiment 추출 (none 제외)
         aspect_sentiments = self._extract_aspect_sentiments(all_aspect_preds, all_aspect_probs)
@@ -289,19 +347,40 @@ class ABSAInference:
                 print(f"  Count: {len(ambiguous_df):,}")
 
 
-def _load_none_thresholds(model_path: Path) -> np.ndarray:
-    """모델 체크포인트와 같은 디렉토리에서 none_thresholds.json 로드"""
+def _load_none_thresholds(model_path: Path) -> tuple:
+    """모델 체크포인트와 같은 디렉토리에서 none_thresholds.json 로드.
+
+    Returns:
+        (none_thresholds, polar_threshold) — polar_threshold는 없으면 None
+
+    Raises:
+        ValueError: threshold 길이가 현재 ASPECT_LABELS와 불일치할 때
+    """
     import json
     threshold_path = Path(model_path).parent / "none_thresholds.json"
     if threshold_path.exists():
         with open(threshold_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         thresholds = np.array(data["thresholds"])
+        polar_threshold = data.get("polar_threshold")
+
+        # 길이 K 검증
+        expected_k = len(ASPECT_LABELS)
+        if len(thresholds) != expected_k:
+            raise ValueError(
+                f"Threshold 길이 불일치: json={len(thresholds)}, "
+                f"ASPECT_LABELS={expected_k}. "
+                f"체크포인트와 config의 aspect 수가 다릅니다. "
+                f"threshold를 재튜닝하거나 config를 확인하세요."
+            )
+
         print(f"Loaded none-thresholds from: {threshold_path}")
-        print(f"  Tuned F1: {data.get('tuned_f1', 'N/A')}")
-        return thresholds
+        print(f"  K={len(thresholds)}, Tuned F1: {data.get('tuned_f1', 'N/A')}")
+        if polar_threshold is not None:
+            print(f"  Polar threshold: {polar_threshold}")
+        return thresholds, polar_threshold
     print("No none_thresholds.json found, using default argmax")
-    return None
+    return None, None
 
 
 def run_inference_on_reviews(
@@ -324,13 +403,14 @@ def run_inference_on_reviews(
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = load_model(checkpoint_path=model_path, model_name=model_name)
 
-    none_thresholds = _load_none_thresholds(model_path)
+    none_thresholds, polar_threshold = _load_none_thresholds(model_path)
 
     inference = ABSAInference(
         model=model,
         tokenizer=tokenizer,
         batch_size=batch_size,
         none_thresholds=none_thresholds,
+        polar_threshold=polar_threshold,
     )
 
     output_path = Path(output_path)
@@ -412,13 +492,14 @@ def run_inference_from_bigquery(
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = load_model(checkpoint_path=model_path, model_name=model_name)
 
-    none_thresholds = _load_none_thresholds(model_path)
+    none_thresholds, polar_threshold = _load_none_thresholds(model_path)
 
     inference = ABSAInference(
         model=model,
         tokenizer=tokenizer,
         batch_size=batch_size,
         none_thresholds=none_thresholds,
+        polar_threshold=polar_threshold,
     )
 
     print("\n추론 실행 중...")
