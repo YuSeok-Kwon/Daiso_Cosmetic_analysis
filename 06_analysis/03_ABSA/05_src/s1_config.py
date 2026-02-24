@@ -7,38 +7,34 @@ from pathlib import Path
 # Project root (Why-pi/ABSA)
 PROJECT_ROOT = Path(__file__).parent.parent
 
-# Data paths
-DATA_ROOT = PROJECT_ROOT / "data"
-RAW_DATA_DIR = DATA_ROOT / "raw"
-PROCESSED_DATA_DIR = DATA_ROOT / "processed"
-INFERENCE_DATA_DIR = DATA_ROOT / "inference"
-CACHE_DIR = DATA_ROOT / "cache"
+# Data paths (번호 디렉토리 기준)
+RAW_DATA_DIR = PROJECT_ROOT / "01_raw_data"
+PROCESSED_DATA_DIR = PROJECT_ROOT / "02_processed_data"
+INFERENCE_DATA_DIR = PROJECT_ROOT / "04_outputs" / "inference"
+CACHE_DIR = PROJECT_ROOT / "04_outputs" / "cache"
+LOG_DIR = PROJECT_ROOT / "04_outputs" / "logs"
 
 # Model paths
-MODEL_ROOT = PROJECT_ROOT / "models"
+MODEL_ROOT = PROJECT_ROOT / "07_models"
 CHECKPOINT_DIR = MODEL_ROOT / "checkpoints"
 
 # Reviews data path (Why-pi project structure)
-REVIEWS_CSV_PATH = PROJECT_ROOT.parent / "data" / "csv" / "reviews.csv"
+REVIEWS_CSV_PATH = PROJECT_ROOT.parent.parent / "Data" / "csv" / "reviews.csv"
 
 # Ensure directories exist
-for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, INFERENCE_DATA_DIR,
-                  CACHE_DIR, CHECKPOINT_DIR]:
+for directory in [INFERENCE_DATA_DIR, CACHE_DIR, LOG_DIR, CHECKPOINT_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-# Fixed aspect labels (11 categories, GPT-4o Batch 라벨링 기준)
+# Fixed aspect labels (8 categories, Stage 2: 미분류·CS/응대·품질/퀄리티 제거)
 ASPECT_LABELS = [
     "배송/포장",
-    "품질/퀄리티",
     "가격/가성비",
     "사용감/성능",
     "용량/휴대",
     "디자인",
     "재질/냄새",
-    "CS/응대",
     "재구매",
     "색상/발색",
-    "미분류",
 ]
 
 # Sentiment labels
@@ -113,13 +109,34 @@ INFERENCE_CONFIG = {
     "num_workers": 4
 }
 
+# Keyword gate configuration (post-processing: precision 보호)
+# 모델이 non-none으로 예측했더라도 키워드 미포함 시 none으로 override
+KEYWORD_GATE_CONFIG = {
+    "디자인": [
+        # Tier1: 구조물/용기류 (41.5% coverage, 1.5% FP)
+        "용기", "뚜껑", "케이스", "패키지", "디자인", "스포이드", "펌프", "튜브",
+        # Tier2: 외관 표현 (+10%p coverage, +2.2%p FP)
+        "예쁘", "이쁘", "귀엽", "귀여", "깔끔", "고급", "앙증",
+        # 미커버 리뷰에서 추가 발굴 (구조물/마감 관련)
+        "팁", "입구", "마감",
+    ],
+}
+
 # None-threshold tuning configuration
 # 학습 완료 후 val set에서 aspect별 최적 threshold를 grid search
 THRESHOLD_TUNING_CONFIG = {
     "search_range": (0.1, 0.95),   # threshold 탐색 범위
     "search_step": 0.05,           # grid search 간격
-    "metric": "f1",                # 최적화 대상: "f1" (4-class macro) or "detection_f1"
+    "metric": "fbeta",             # F0.5 (precision 가중) — 과다 검출 억제
+    "beta": 0.5,                   # precision 4배 가중
     "default_threshold": 0.5,      # 튜닝 전 기본값
+}
+
+# Golden set split configuration (Stage 2: dev/test 분할)
+GOLDEN_SPLIT_CONFIG = {
+    "dev_ratio": 0.60,
+    "test_ratio": 0.40,
+    "random_state": 42,
 }
 
 # Fine-tuning configuration (Stage 2: 골든셋 파인튜닝)
@@ -163,7 +180,7 @@ OUTPUT_COLUMNS = [
 VALIDATION_CONFIG = {
     # Valid values
     "valid_sentiments": ["positive", "neutral", "negative"],
-    "valid_aspects": ASPECT_LABELS,  # 11개 aspect 사용
+    "valid_aspects": ASPECT_LABELS,  # 10개 aspect 사용
     "score_range": (-1.0, 1.0),
 
     # Negative keywords for risk detection
@@ -194,7 +211,7 @@ VALIDATION_CONFIG = {
 }
 
 # Validation data paths
-VALIDATION_DATA_DIR = DATA_ROOT / "validation"
+VALIDATION_DATA_DIR = PROCESSED_DATA_DIR / "validation"
 VALIDATION_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Validation output files
