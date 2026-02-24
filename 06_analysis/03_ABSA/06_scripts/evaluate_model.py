@@ -10,7 +10,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 
 # .env 파일 로드
-load_dotenv(Path(__file__).parent / ".env")
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from openai_client import OpenAIClient
@@ -209,7 +209,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="ABSA 모델 평가")
-    parser.add_argument("--golden-set", type=str, default="data/golden_set.xlsx",
+    parser.add_argument("--golden-set", type=str, default="02_processed_data/validation/golden_set.xlsx",
                         help="Golden Set 파일 경로")
     parser.add_argument("--model", type=str, default="gpt-4o-mini",
                         help="평가할 모델")

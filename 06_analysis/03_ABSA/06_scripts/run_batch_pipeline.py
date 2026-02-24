@@ -12,7 +12,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv(Path(__file__).parent / ".env")
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 
 class FullBatchPipeline:
@@ -23,7 +23,7 @@ class FullBatchPipeline:
     def __init__(self, model: str = "gpt-4o"):
         self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         self.model = model
-        self.data_dir = Path(__file__).parent / "data"
+        self.data_dir = Path(__file__).parent.parent / "999_Temporary"
         self.batch_dir = self.data_dir / "batch"
         self.batch_dir.mkdir(parents=True, exist_ok=True)
 

@@ -25,43 +25,38 @@
 ├── 03_notebooks/             # 분석 노트북
 │
 ├── 04_outputs/               # 산출물
+│   ├── cache/                # 캐시
 │   ├── figures/
+│   ├── inference/            # 추론 결과
+│   ├── logs/                 # 로그 파일
 │   └── reports/
 │
-├── 05_src/                   # Python 모듈
-│   ├── config.py             # 설정
-│   ├── dataset.py            # 데이터셋 클래스
-│   ├── model.py              # 모델 정의
-│   ├── train.py              # 학습 로직
-│   ├── inference.py          # 추론
-│   ├── evaluation.py         # 평가
-│   ├── labeling.py           # 라벨링
-│   └── sampling.py           # 샘플링
+├── 05_src/                   # Python 모듈 (import: RQ_absa)
+│   ├── s1_config.py          # 설정 (라벨, 경로, 학습/추론 파라미터)
+│   ├── s2_sampling.py        # 층화 샘플링
+│   ├── s3_labeling.py        # GPT 라벨링
+│   ├── s4_dataset.py         # CSV → Dataset (리뷰 그룹화, 골든셋 분할)
+│   ├── s5_model.py           # MultiTaskABSAModel (KcELECTRA + 2 heads)
+│   ├── s6_train.py           # 학습 루프 (2-stage: 약지도 → 골든셋 파인튜닝)
+│   ├── s7_evaluation.py      # 평가 (4-class F1, threshold 튜닝)
+│   └── s8_inference.py       # 배치 추론, streaming CSV
 │
-├── 06_models/                # 모델 체크포인트
-│   └── checkpoints/
-│
-├── 07_scripts/               # 실행 스크립트
+├── 06_scripts/               # 실행 스크립트
 │   ├── batch_labeling.py     # Batch API 라벨링
 │   ├── run_batch_pipeline.py # 배치 파이프라인
-│   ├── evaluate_model.py     # 모델 평가
-│   └── ...
+│   ├── evaluate_model.py     # 모델 평가 (GPT vs Golden Set)
+│   ├── run_absa_bq.py        # BigQuery 연동
+│   └── openai_client.py      # OpenAI API 클라이언트
+│
+├── 07_models/                # 모델 체크포인트
+│   └── checkpoints/
 │
 ├── 999_Temporary/            # 임시 파일 (주기적 정리)
 │   ├── batch_inputs/         # Batch API jsonl 파일
 │   └── cache/
 │
-├── config/                   # 설정 파일
-│   └── .env
-│
-├── docs/                     # 로컬 참조 문서
-│   └── soft_hierarchy.txt
-│
-│   # 📌 주요 문서는 07_docs/ABSA/에 통합 관리
-│   #    07_docs/ABSA/ABSA_파이프라인.md
-│   #    07_docs/ABSA/TEAM_GUIDE.md
-│
-├── logs/                     # 로그 파일
+├── .env                      # 환경 변수 (API 키 등, git 미포함)
+├── RQ_absa -> 05_src         # 심볼릭 링크 (import 경로)
 ├── README.md
 └── requirements.txt
 ```
@@ -124,38 +119,40 @@ Sentiment  Aspect-Sentiment
 # 환경 설정
 conda activate py_study  # torch, transformers, sklearn 필요
 
-# 패키지 경로 설정
+# 03_ABSA/ 디렉토리에서 실행
+cd 06_analysis/03_ABSA
 export PYTHONPATH=$(pwd)
 
-# 모델 학습
-python -m RQ_absa.train \
-    --csv_path 02_processed_data/interim/v4/absa_analysis_ready.csv \
+# 모델 학습 (Stage 1: 약지도 학습)
+python -m RQ_absa.s6_train \
+    --csv_path 02_processed_data/final/absa_analysis_ready.csv \
     --model_name beomi/KcELECTRA-base \
     --num_epochs 10 \
     --batch_size 32
 
-# 추론 실행 (CSV 기반)
-python -m RQ_absa.inference \
+# 추론 실행 (CSV 기반, streaming)
+python -m RQ_absa.s8_inference \
     --input_path /path/to/reviews.csv \
-    --output_path /path/to/results.csv \
-    --model_path 06_models/checkpoints/best_model.pt
+    --output_path 04_outputs/inference/results.csv \
+    --model_path 07_models/checkpoints/best_model.pt
 
-# OpenAI 배치 라벨링 (기존)
-cp config/.env.example config/.env
-python 07_scripts/batch_labeling.py
+# OpenAI 배치 라벨링
+python 06_scripts/batch_labeling.py
 ```
 
 ## 주요 소스 파일
 
 | 파일 | 역할 |
 |------|------|
-| `05_src/config.py` | 라벨 정의, 학습/추론/threshold 설정 |
-| `05_src/dataset.py` | CSV → 리뷰 단위 그룹화 → Dataset 생성 |
-| `05_src/model.py` | MultiTaskABSAModel (KcELECTRA + 2 heads) |
-| `05_src/train.py` | 학습 루프, threshold 자동 튜닝 |
-| `05_src/evaluation.py` | 4-class F1, detection F1, per-aspect F1 |
-| `05_src/inference.py` | 배치 추론, DataFrame 추론, BigQuery 연동 |
+| `05_src/s1_config.py` | 라벨 정의, 경로, 학습/추론/threshold/파인튜닝 설정 |
+| `05_src/s2_sampling.py` | 3단계 층화 샘플링 (대분류→소분류→감성) |
+| `05_src/s3_labeling.py` | GPT-4o 라벨링 (단건/배치/BigQuery) |
+| `05_src/s4_dataset.py` | CSV → 리뷰 그룹화 → Dataset + 골든셋 3-way 분할 |
+| `05_src/s5_model.py` | MultiTaskABSAModel (KcELECTRA + 2 heads) |
+| `05_src/s6_train.py` | 학습 루프 + 2-stage (약지도→골든셋 파인튜닝) |
+| `05_src/s7_evaluation.py` | 4-class F1, detection F1, per-aspect none-threshold 튜닝 |
+| `05_src/s8_inference.py` | streaming 배치 추론, DataFrame/BigQuery 추론 |
 
 ## 생성일
 
-2025-02-16 (최종 수정: 2026-02-23)
+2025-02-16 (최종 수정: 2026-02-24)

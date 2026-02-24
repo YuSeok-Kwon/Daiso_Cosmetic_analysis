@@ -1,21 +1,21 @@
 """
 ABSA BigQuery 연동 실행 스크립트
 
-사용법:
+사용법 (03_ABSA/ 디렉토리에서 실행):
     # 분석 현황 확인
-    python run_absa_bq.py --stats
+    python 06_scripts/run_absa_bq.py --stats
 
     # BigQuery에서 리뷰 로드 → CSV 내보내기
-    python run_absa_bq.py --export --limit 10000 --output data/reviews_for_labeling.csv
+    python 06_scripts/run_absa_bq.py --export --limit 10000 --output 04_outputs/reviews_for_labeling.csv
 
     # GPT 라벨링 (BigQuery + CSV 저장)
-    python run_absa_bq.py --label --limit 1000 --output data/labeled.jsonl --save-csv data/labeled.csv
+    python 06_scripts/run_absa_bq.py --label --limit 1000 --output 04_outputs/labeled.jsonl --save-csv 04_outputs/labeled.csv
 
     # 모델 추론 (BigQuery + CSV 저장)
-    python run_absa_bq.py --infer --model models/best_model.pt --limit 10000 --save-csv data/inference_results.csv
+    python 06_scripts/run_absa_bq.py --infer --limit 10000 --save-csv 04_outputs/inference_results.csv
 
     # BigQuery 저장 안하고 CSV만 저장
-    python run_absa_bq.py --infer --model models/best_model.pt --no-save-bq --save-csv data/results.csv
+    python 06_scripts/run_absa_bq.py --infer --no-save-bq --save-csv 04_outputs/results.csv
 """
 import argparse
 from pathlib import Path
@@ -35,7 +35,7 @@ def main():
     parser.add_argument('--limit', type=int, default=None, help='최대 처리 건수')
     parser.add_argument('--output', type=str, default=None, help='출력 파일 경로 (라벨링: JSONL, 추론: CSV)')
     parser.add_argument('--save-csv', type=str, default=None, help='결과 CSV 저장 경로')
-    parser.add_argument('--model', type=str, default='models/best_model.pt', help='모델 경로')
+    parser.add_argument('--model', type=str, default='07_models/checkpoints/best_model.pt', help='모델 경로')
     parser.add_argument('--no-save-bq', action='store_true', help='BigQuery 저장 안함')
     args = parser.parse_args()
 
@@ -62,16 +62,16 @@ def main():
 
     # 2. 리뷰 내보내기
     if args.export:
-        output_path = args.output or f'data/reviews_export_{get_timestamp()}.csv'
+        output_path = args.output or f'04_outputs/reviews_export_{get_timestamp()}.csv'
         print(f"리뷰 내보내기: {output_path}")
         bq.export_for_training(output_path, limit=args.limit)
         return
 
     # 3. GPT 라벨링
     if args.label:
-        from RQ.labeling import label_from_bigquery
+        from RQ_absa.s3_labeling import label_from_bigquery
 
-        output_path = Path(args.output or f'data/labeled_{get_timestamp()}.jsonl')
+        output_path = Path(args.output or f'04_outputs/labeled_{get_timestamp()}.jsonl')
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # CSV 저장 경로
@@ -102,7 +102,7 @@ def main():
 
     # 4. 모델 추론
     if args.infer:
-        from RQ.inference import run_inference_from_bigquery
+        from RQ_absa.s8_inference import run_inference_from_bigquery
 
         model_path = Path(args.model)
         if not model_path.exists():
@@ -114,7 +114,7 @@ def main():
         if save_csv is None and args.output:
             save_csv = args.output
         elif save_csv is None and not args.no_save_bq:
-            save_csv = f'data/inference_{get_timestamp()}.csv'
+            save_csv = f'04_outputs/inference/inference_{get_timestamp()}.csv'
 
         print("=" * 60)
         print("모델 추론 시작")
