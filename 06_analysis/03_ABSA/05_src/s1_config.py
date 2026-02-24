@@ -47,8 +47,9 @@ SENTIMENT_LABEL_TO_ID = {label: idx for idx, label in enumerate(SENTIMENT_LABELS
 SENTIMENT_ID_TO_LABEL = {idx: label for idx, label in enumerate(SENTIMENT_LABELS)}
 
 # Aspect-Sentiment labels (Option A: aspect별 4-class 통합)
-# none=해당 aspect 미존재, negative/neutral/positive=해당 감성
-ASPECT_SENTIMENT_LABELS = ["none", "negative", "neutral", "positive"]
+# none=해당 aspect 미존재, positive/neutral/negative=해당 감성
+# Wide CSV 인코딩과 일치: 0=none, 1=positive, 2=neutral, 3=negative
+ASPECT_SENTIMENT_LABELS = ["none", "positive", "neutral", "negative"]
 ASPECT_SENTIMENT_TO_ID = {label: idx for idx, label in enumerate(ASPECT_SENTIMENT_LABELS)}
 ASPECT_SENTIMENT_ID_TO_LABEL = {idx: label for idx, label in enumerate(ASPECT_SENTIMENT_LABELS)}
 NUM_ASPECT_SENTIMENT_CLASSES = len(ASPECT_SENTIMENT_LABELS)  # 4
