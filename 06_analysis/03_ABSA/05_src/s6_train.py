@@ -5,15 +5,16 @@ import math
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from transformers import AdamW, get_linear_schedule_with_warmup
+from torch.optim import AdamW
+from transformers import get_linear_schedule_with_warmup
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 from typing import Dict, Optional
 import json
 
-from RQ_absa.model import MultiTaskABSAModel, compute_class_weights, compute_aspect_class_weights
-from RQ_absa.evaluation import (
+from RQ_absa.s5_model import MultiTaskABSAModel, compute_class_weights, compute_aspect_class_weights
+from RQ_absa.s7_evaluation import (
     ABSAEvaluator,
     collect_predictions,
     tune_none_thresholds,
@@ -149,8 +150,8 @@ class ABSATrainer:
         print(f"Best validation Aspect-Sentiment F1: {self.best_val_metric:.4f}")
         print("=" * 60)
 
-        # None-threshold 튜닝 (val set 기반)
-        self.tune_thresholds()
+        # Best model 로드 후 threshold 튜닝
+        self._load_best_and_tune_thresholds()
 
         if self.checkpoint_dir:
             history_path = self.checkpoint_dir / "training_history.json"
@@ -179,12 +180,14 @@ class ABSATrainer:
             attention_mask = batch["attention_mask"].to(self.device)
             sentiment_labels = batch["sentiment_label"].to(self.device)
             aspect_labels = batch["aspect_label"].to(self.device)  # [B, 11] LongTensor
+            aspect_mask = batch["aspect_mask"].to(self.device)     # [B, 11] FloatTensor
 
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 sentiment_labels=sentiment_labels,
-                aspect_labels=aspect_labels
+                aspect_labels=aspect_labels,
+                aspect_mask=aspect_mask
             )
 
             sentiment_loss = outputs["sentiment_loss"]
@@ -199,12 +202,18 @@ class ABSATrainer:
 
             loss.backward()
 
-            if (step + 1) % gradient_accumulation_steps == 0:
+            # Optimizer step: accumulation 완료 또는 마지막 배치
+            did_update = False
+            is_accum_boundary = (step + 1) % gradient_accumulation_steps == 0
+            is_last_batch = (step + 1) == len(self.train_loader)
+
+            if is_accum_boundary or is_last_batch:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
                 self.global_step += 1
+                did_update = True
 
             total_loss += loss.item() * gradient_accumulation_steps
             total_sentiment_loss += sentiment_loss.item()
@@ -218,29 +227,22 @@ class ABSATrainer:
                 "lr": self.scheduler.get_last_lr()[0]
             })
 
-            # step 0에서는 logging/eval/save 트리거 방지
-            if self.global_step > 0 and self.global_step % logging_steps == 0:
-                avg_loss = total_loss / num_batches
-                print(f"\n[Step {self.global_step}] Loss: {avg_loss:.4f}")
+            # logging/eval/save는 optimizer step 직후에만 실행
+            if did_update and self.global_step > 0:
+                if logging_steps > 0 and self.global_step % logging_steps == 0:
+                    avg_loss = total_loss / num_batches
+                    print(f"\n[Step {self.global_step}] Loss: {avg_loss:.4f}")
 
-            if eval_steps > 0 and self.global_step > 0 and self.global_step % eval_steps == 0:
-                val_metrics = self.evaluate(self.val_loader)
-                print(f"\n[Step {self.global_step}] Val Metrics:")
-                print(f"  Sentiment Acc: {val_metrics['sentiment_accuracy']:.4f}")
-                print(f"  Sentiment F1: {val_metrics['sentiment_f1_macro']:.4f}")
-                print(f"  Aspect-Sentiment F1: {val_metrics['aspect_sentiment_f1_macro']:.4f}")
-                self.model.train()
+                if eval_steps > 0 and self.global_step % eval_steps == 0:
+                    val_metrics = self.evaluate(self.val_loader)
+                    print(f"\n[Step {self.global_step}] Val Metrics:")
+                    print(f"  Sentiment Acc: {val_metrics['sentiment_accuracy']:.4f}")
+                    print(f"  Sentiment F1: {val_metrics['sentiment_f1_macro']:.4f}")
+                    print(f"  Aspect-Sentiment F1: {val_metrics['aspect_sentiment_f1_macro']:.4f}")
+                    self.model.train()
 
-            if save_steps > 0 and self.global_step > 0 and self.global_step % save_steps == 0:
-                self.save_checkpoint(is_best=False)
-
-        # leftover batch: gradient accumulation 나머지 그래디언트 flush
-        if gradient_accumulation_steps > 1 and num_batches % gradient_accumulation_steps != 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.optimizer.step()
-            self.scheduler.step()
-            self.optimizer.zero_grad()
-            self.global_step += 1
+                if save_steps > 0 and self.global_step % save_steps == 0:
+                    self.save_checkpoint(is_best=False)
 
         return {
             "loss": total_loss / num_batches,
@@ -255,6 +257,7 @@ class ABSATrainer:
         all_sentiment_labels = []
         all_aspect_probs = []
         all_aspect_labels = []
+        all_aspect_masks = []
 
         total_loss = 0.0
         total_sentiment_loss = 0.0
@@ -267,12 +270,14 @@ class ABSATrainer:
                 attention_mask = batch["attention_mask"].to(self.device)
                 sentiment_labels = batch["sentiment_label"].to(self.device)
                 aspect_labels = batch["aspect_label"].to(self.device)
+                aspect_mask = batch["aspect_mask"].to(self.device)
 
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     sentiment_labels=sentiment_labels,
-                    aspect_labels=aspect_labels
+                    aspect_labels=aspect_labels,
+                    aspect_mask=aspect_mask
                 )
 
                 sentiment_loss = outputs["sentiment_loss"]
@@ -294,11 +299,13 @@ class ABSATrainer:
                 all_sentiment_labels.extend(sentiment_labels.cpu().numpy())
                 all_aspect_probs.extend(aspect_probs.cpu().numpy())
                 all_aspect_labels.extend(aspect_labels.cpu().numpy())
+                all_aspect_masks.extend(aspect_mask.cpu().numpy())
 
         all_sentiment_preds = np.array(all_sentiment_preds)
         all_sentiment_labels = np.array(all_sentiment_labels)
         all_aspect_probs = np.array(all_aspect_probs)
         all_aspect_labels = np.array(all_aspect_labels)
+        all_aspect_masks = np.array(all_aspect_masks)
 
         # Threshold가 튜닝되어 있으면 적용, 아니면 argmax
         if self.none_thresholds is not None:
@@ -310,7 +317,8 @@ class ABSATrainer:
             sentiment_preds=all_sentiment_preds,
             sentiment_labels=all_sentiment_labels,
             aspect_preds=all_aspect_preds,
-            aspect_labels=all_aspect_labels
+            aspect_labels=all_aspect_labels,
+            aspect_masks=all_aspect_masks
         )
 
         metrics["loss"] = total_loss / num_batches
@@ -335,6 +343,7 @@ class ABSATrainer:
         tuning_result = tune_none_thresholds(
             aspect_probs=results["aspect_probs"],
             aspect_labels=results["aspect_labels"],
+            aspect_masks=results.get("aspect_masks"),
             search_range=search_range,
             search_step=search_step,
             metric=metric
@@ -354,6 +363,30 @@ class ABSATrainer:
             with open(threshold_path, "w", encoding="utf-8") as f:
                 json.dump(threshold_data, f, indent=2, ensure_ascii=False)
             print(f"Saved thresholds to: {threshold_path}")
+
+    def _load_best_and_tune_thresholds(self):
+        """
+        Best model을 로드한 뒤 threshold 튜닝.
+        튜닝된 threshold를 best_model.pt에도 포함시킴.
+        """
+        if self.checkpoint_dir:
+            best_path = self.checkpoint_dir / "best_model.pt"
+            if best_path.exists():
+                ckpt = torch.load(best_path, map_location=self.device)
+                self.model.load_state_dict(ckpt["model_state_dict"])
+                print(f"Loaded best model for threshold tuning: {best_path}")
+
+                self.tune_thresholds()
+
+                # threshold를 best_model.pt에도 저장
+                if self.none_thresholds is not None:
+                    ckpt["none_thresholds"] = self.none_thresholds.tolist()
+                    torch.save(ckpt, best_path)
+                    print(f"Updated best_model.pt with none_thresholds")
+                return
+
+        # best_model.pt가 없으면 현재 모델로 튜닝
+        self.tune_thresholds()
 
     def fine_tune(
         self,
@@ -443,9 +476,8 @@ class ABSATrainer:
         print(f"Best fine-tune Aspect-Sentiment F1: {best_finetune_metric:.4f}")
         print("=" * 60)
 
-        # gold_tune_loader로 none-threshold 재튜닝
-        print("\n골든셋 기반 threshold 재튜닝...")
-        self.tune_thresholds()
+        # Best model 로드 후 threshold 재튜닝
+        self._load_best_and_tune_thresholds()
 
         # 원래 loader 복원
         self.train_loader = original_train_loader
@@ -457,6 +489,8 @@ class ABSATrainer:
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+        from RQ_absa.s1_config import ASPECT_LABELS, ASPECT_SENTIMENT_TO_ID
+
         checkpoint = {
             "epoch": self.current_epoch,
             "global_step": self.global_step,
@@ -464,7 +498,12 @@ class ABSATrainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
             "best_val_metric": self.best_val_metric,
-            "val_metrics": val_metrics
+            "val_metrics": val_metrics,
+            # 라벨 매핑 메타 (추론 시 해석 보장)
+            "label_meta": {
+                "aspect_labels": ASPECT_LABELS,
+                "aspect_sentiment_to_id": ASPECT_SENTIMENT_TO_ID,
+            },
         }
 
         if is_best:
@@ -482,17 +521,26 @@ class ABSATrainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-        if checkpoint["scheduler_state_dict"] is not None:
+        if self.scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-        self.current_epoch = checkpoint["epoch"]
-        self.global_step = checkpoint["global_step"]
-        self.best_val_metric = checkpoint["best_val_metric"]
+        self.current_epoch = checkpoint.get("epoch", 0)
+        self.global_step = checkpoint.get("global_step", 0)
+        self.best_val_metric = checkpoint.get("best_val_metric", 0.0)
 
         print(f"Loaded checkpoint from: {checkpoint_path}")
         print(f"  Epoch: {self.current_epoch}")
         print(f"  Global step: {self.global_step}")
         print(f"  Best val metric: {self.best_val_metric:.4f}")
+
+        # 라벨 매핑 검증
+        if "label_meta" in checkpoint:
+            from RQ_absa.s1_config import ASPECT_SENTIMENT_TO_ID
+            saved_map = checkpoint["label_meta"].get("aspect_sentiment_to_id", {})
+            if saved_map != ASPECT_SENTIMENT_TO_ID:
+                print(f"  WARNING: 체크포인트 라벨 매핑이 현재 config와 다름!")
+                print(f"    Checkpoint: {saved_map}")
+                print(f"    Config:     {ASPECT_SENTIMENT_TO_ID}")
 
 
 def create_model_with_class_weights(
@@ -514,18 +562,17 @@ def create_model_with_class_weights(
     aspect_class_weights = None
 
     if use_class_weight or use_focal_loss:
-        # Sentiment class weights
-        all_sentiment_labels = []
-        all_aspect_labels = []
+        # Dataset 속성에서 직접 접근 (토크나이징 회피)
+        from RQ_absa.s1_config import SENTIMENT_LABELS, ASPECT_SENTIMENT_LABELS
 
-        for i in range(len(train_dataset)):
-            item = train_dataset[i]
-            all_sentiment_labels.append(item["sentiment_label"].item())
-            all_aspect_labels.append(item["aspect_label"].tolist())
+        sentiment_tensor = torch.tensor(train_dataset.sentiment_labels)
+        aspect_tensor = torch.tensor(train_dataset.aspect_labels, dtype=torch.long)
+        mask_tensor = (
+            torch.tensor(train_dataset.aspect_masks, dtype=torch.float)
+            if train_dataset.aspect_masks is not None
+            else None
+        )
 
-        from RQ_absa.config import SENTIMENT_LABELS, ASPECT_SENTIMENT_LABELS
-
-        sentiment_tensor = torch.tensor(all_sentiment_labels)
         sentiment_class_weights = compute_class_weights(sentiment_tensor, num_sentiment_labels)
 
         print("\nSentiment class distribution:")
@@ -533,12 +580,17 @@ def create_model_with_class_weights(
         for name, count, weight in zip(SENTIMENT_LABELS, class_counts, sentiment_class_weights):
             print(f"  {name}: {count.item()} samples, weight={weight.item():.4f}")
 
-        # Aspect class weights (4-class: none/neg/neu/pos)
-        aspect_tensor = torch.tensor(all_aspect_labels, dtype=torch.long)
-        aspect_class_weights = compute_aspect_class_weights(aspect_tensor, num_aspect_sentiment_classes)
+        # Aspect class weights (4-class: none/pos/neu/neg, mask=1만 사용)
+        aspect_class_weights = compute_aspect_class_weights(
+            aspect_tensor, num_aspect_sentiment_classes, aspect_masks=mask_tensor
+        )
 
-        print("\nAspect-Sentiment class distribution:")
-        flat_aspects = aspect_tensor.view(-1)
+        print("\nAspect-Sentiment class distribution (mask=1 only):")
+        if mask_tensor is not None:
+            mask_flat = mask_tensor.view(-1).bool()
+            flat_aspects = aspect_tensor.view(-1)[mask_flat]
+        else:
+            flat_aspects = aspect_tensor.view(-1)
         aspect_counts = torch.bincount(flat_aspects, minlength=num_aspect_sentiment_classes)
         for name, count, weight in zip(ASPECT_SENTIMENT_LABELS, aspect_counts, aspect_class_weights):
             print(f"  {name}: {count.item()} samples, weight={weight.item():.4f}")
