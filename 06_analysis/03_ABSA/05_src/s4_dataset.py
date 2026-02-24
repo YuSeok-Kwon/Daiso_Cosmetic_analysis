@@ -2,7 +2,8 @@
 Dataset preparation for ABSA model training (Option A: aspect별 4-class 통합)
 
 리뷰 단위로 그룹화하여 각 aspect별 sentiment를 예측하는 구조.
-출력 라벨: [11] (각 값 0~3: none/negative/neutral/positive)
+출력 라벨: [11] (각 값 0~3: none/positive/neutral/negative)
+출력 마스크: [11] (1=학습에 포함, 0=loss에서 제외)
 """
 import json
 import pandas as pd
@@ -27,19 +28,19 @@ class ABSADataProcessor:
         aspect_sentiment_labels: List[str] = None
     ):
         if sentiment_labels is None:
-            from RQ_absa.config import SENTIMENT_LABELS
+            from RQ_absa.s1_config import SENTIMENT_LABELS
             self.sentiment_labels = SENTIMENT_LABELS
         else:
             self.sentiment_labels = sentiment_labels
 
         if aspect_labels is None:
-            from RQ_absa.config import ASPECT_LABELS
+            from RQ_absa.s1_config import ASPECT_LABELS
             self.aspect_labels = ASPECT_LABELS
         else:
             self.aspect_labels = aspect_labels
 
         if aspect_sentiment_labels is None:
-            from RQ_absa.config import ASPECT_SENTIMENT_LABELS
+            from RQ_absa.s1_config import ASPECT_SENTIMENT_LABELS
             self.aspect_sentiment_labels = ASPECT_SENTIMENT_LABELS
         else:
             self.aspect_sentiment_labels = aspect_sentiment_labels
@@ -51,7 +52,7 @@ class ABSADataProcessor:
         self.aspect_to_id = {label: idx for idx, label in enumerate(self.aspect_labels)}
         self.id_to_aspect = {idx: label for idx, label in enumerate(self.aspect_labels)}
 
-        from RQ_absa.config import ASPECT_SENTIMENT_TO_ID
+        from RQ_absa.s1_config import ASPECT_SENTIMENT_TO_ID
         self.aspect_sentiment_to_id = ASPECT_SENTIMENT_TO_ID
 
     def load_and_group_csv(self, csv_path: Path) -> pd.DataFrame:
@@ -59,11 +60,22 @@ class ABSADataProcessor:
         absa_analysis_ready.csv를 로드하고 리뷰 단위로 그룹화.
 
         입력 CSV 컬럼: review_id, text, aspect, aspect_sentiment, review_sentiment, ...
-        출력 DataFrame: 리뷰당 1행, aspect_vector [11] (각 값 0~3)
+        출력 DataFrame: 리뷰당 1행, aspect_vector [11], aspect_mask_vector [11]
+
+        충돌 처리: 동일 (review_id, aspect)에 다른 sentiment → mask=0, label=0
         """
         print(f"Loading data from: {csv_path}")
         df = pd.read_csv(csv_path)
         print(f"Loaded {len(df):,} rows (aspect-level)")
+
+        # 충돌 탐지: (review_id, aspect)에 sentiment가 다른 경우
+        conflict_keys = set()
+        dup = df.groupby(["review_id", "aspect"])["aspect_sentiment"].nunique()
+        for (rid, asp), cnt in dup.items():
+            if cnt > 1:
+                conflict_keys.add((rid, asp))
+        if conflict_keys:
+            print(f"  충돌 감지: {len(conflict_keys)}쌍 (mask=0 처리)")
 
         # 리뷰 단위로 그룹화
         grouped = df.groupby("review_id")
@@ -72,8 +84,9 @@ class ABSADataProcessor:
         for review_id, group in grouped:
             first_row = group.iloc[0]
 
-            # 11-dim 라벨 초기화 (모두 none=0)
+            # 11-dim 초기화
             aspect_vector = [0] * len(self.aspect_labels)
+            aspect_mask = [0] * len(self.aspect_labels)  # 기본: unknown
 
             # 리뷰 전체 sentiment (mixed는 제거)
             review_sent = str(first_row.get("review_sentiment", "neutral")).strip().lower()
@@ -88,12 +101,18 @@ class ABSADataProcessor:
 
                 if aspect_name in self.aspect_to_id and aspect_sent in self.aspect_sentiment_to_id:
                     aspect_idx = self.aspect_to_id[aspect_name]
-                    # 미분류 aspect는 항상 neutral(2)로 강제
-                    if aspect_name == "미분류":
-                        sent_id = self.aspect_sentiment_to_id["neutral"]
+
+                    # 충돌인 경우 → mask=0, label=0
+                    if (review_id, aspect_name) in conflict_keys:
+                        aspect_vector[aspect_idx] = 0
+                        aspect_mask[aspect_idx] = 0
                     else:
-                        sent_id = self.aspect_sentiment_to_id[aspect_sent]
-                    aspect_vector[aspect_idx] = sent_id
+                        if aspect_name == "미분류":
+                            sent_id = self.aspect_sentiment_to_id["neutral"]
+                        else:
+                            sent_id = self.aspect_sentiment_to_id[aspect_sent]
+                        aspect_vector[aspect_idx] = sent_id
+                        aspect_mask[aspect_idx] = 1
 
             reviews.append({
                 "review_id": review_id,
@@ -101,7 +120,7 @@ class ABSADataProcessor:
                 "sentiment_id": sentiment_id,
                 "sentiment": review_sent,
                 "aspect_vector": aspect_vector,
-                # 메타 정보 보존
+                "aspect_mask_vector": aspect_mask,
                 "product_code": first_row.get("product_code"),
                 "rating": first_row.get("rating"),
                 "category_1": first_row.get("category_1"),
@@ -126,8 +145,8 @@ class ABSADataProcessor:
         for i, aspect_name in enumerate(self.aspect_labels):
             counts = np.bincount(aspect_vectors[:, i], minlength=4)
             total_mentioned = counts[1:].sum()
-            print(f"  {aspect_name}: none={counts[0]}, neg={counts[1]}, "
-                  f"neu={counts[2]}, pos={counts[3]} (언급률: {total_mentioned/len(df)*100:.1f}%)")
+            print(f"  {aspect_name}: none={counts[0]}, pos={counts[1]}, "
+                  f"neu={counts[2]}, neg={counts[3]} (언급률: {total_mentioned/len(df)*100:.1f}%)")
 
     def split_data(
         self,
@@ -232,7 +251,8 @@ class ABSADataset(Dataset):
     """
     PyTorch Dataset for ABSA model (Option A).
 
-    aspect_label: [11] LongTensor (각 값 0~3: none/neg/neu/pos)
+    aspect_label: [11] LongTensor (각 값 0~3: none/pos/neu/neg)
+    aspect_mask: [11] FloatTensor (1=학습 포함, 0=loss 제외)
     """
 
     def __init__(
@@ -241,13 +261,16 @@ class ABSADataset(Dataset):
         sentiment_labels: List[int],
         aspect_labels: List[List[int]],
         tokenizer,
-        max_length: int = 128
+        max_length: int = 128,
+        aspect_masks: List[List[int]] = None
     ):
         self.texts = texts
         self.sentiment_labels = sentiment_labels
         self.aspect_labels = aspect_labels
         self.tokenizer = tokenizer
         self.max_length = max_length
+        # mask가 없으면 모든 셀 학습 (기존 호환)
+        self.aspect_masks = aspect_masks
 
     def __len__(self):
         return len(self.texts)
@@ -265,12 +288,20 @@ class ABSADataset(Dataset):
             return_tensors="pt"
         )
 
-        return {
+        item = {
             "input_ids": encoding["input_ids"].squeeze(0),
             "attention_mask": encoding["attention_mask"].squeeze(0),
             "sentiment_label": torch.tensor(sentiment_label, dtype=torch.long),
-            "aspect_label": torch.tensor(aspect_label, dtype=torch.long),  # [11] LongTensor
+            "aspect_label": torch.tensor(aspect_label, dtype=torch.long),  # [11]
         }
+
+        if self.aspect_masks is not None:
+            item["aspect_mask"] = torch.tensor(self.aspect_masks[idx], dtype=torch.float)
+        else:
+            # mask 없으면 전부 1 (모든 셀 학습)
+            item["aspect_mask"] = torch.ones(len(aspect_label), dtype=torch.float)
+
+        return item
 
 
 def create_datasets_from_golden(
@@ -332,13 +363,15 @@ def create_datasets_from_golden(
     print(f"  test:     {len(test_df):,} ({len(test_df)/len(df)*100:.1f}%)")
 
     datasets = []
+    has_mask = "aspect_mask_vector" in df.columns
     for name, split_df in [("finetune", finetune_df), ("tune", tune_df), ("test", test_df)]:
         dataset = ABSADataset(
             texts=split_df["text"].tolist(),
             sentiment_labels=split_df["sentiment_id"].tolist(),
             aspect_labels=split_df["aspect_vector"].tolist(),
             tokenizer=tokenizer,
-            max_length=max_length
+            max_length=max_length,
+            aspect_masks=split_df["aspect_mask_vector"].tolist() if has_mask else None
         )
         datasets.append(dataset)
 
@@ -378,6 +411,7 @@ def create_datasets_from_csv(
         df, train_ratio, val_ratio, test_ratio, random_state
     )
 
+    has_mask = "aspect_mask_vector" in df.columns
     datasets = []
     for name, split_df in [("Train", train_df), ("Val", val_df), ("Test", test_df)]:
         dataset = ABSADataset(
@@ -385,7 +419,8 @@ def create_datasets_from_csv(
             sentiment_labels=split_df["sentiment_id"].tolist(),
             aspect_labels=split_df["aspect_vector"].tolist(),
             tokenizer=tokenizer,
-            max_length=max_length
+            max_length=max_length,
+            aspect_masks=split_df["aspect_mask_vector"].tolist() if has_mask else None
         )
         datasets.append(dataset)
         print(f"  {name}: {len(dataset):,} samples")
@@ -418,5 +453,131 @@ def create_datasets_from_splits(
         )
         datasets.append(dataset)
         print(f"  {name}: {len(dataset):,} samples")
+
+    return datasets[0], datasets[1], datasets[2]
+
+
+def _load_wide_csv(wide_csv_path: Path) -> pd.DataFrame:
+    """
+    Wide format CSV 로드 및 파싱.
+
+    Wide CSV 컬럼 구조:
+    - 메타: review_id, product_code, user_id, rating, review_date, ...
+    - label_<aspect>: 0=none, 1=positive, 2=neutral, 3=negative
+    - mask_<aspect>: 1=학습 포함, 0=loss 제외
+
+    Returns:
+        DataFrame with 'text', 'sentiment_id', 'aspect_vector', 'aspect_mask_vector'
+    """
+    from RQ_absa.s1_config import ASPECT_LABELS, SENTIMENT_LABEL_TO_ID
+
+    df = pd.read_csv(wide_csv_path)
+    print(f"Loaded wide CSV: {len(df):,} reviews from {wide_csv_path}")
+
+    # aspect 컬럼명 생성 (/ → _)
+    aspect_cols = [a.replace('/', '_') for a in ASPECT_LABELS]
+
+    # aspect_vector, aspect_mask_vector 생성
+    aspect_vectors = []
+    aspect_masks = []
+    for _, row in df.iterrows():
+        labels = [0 if pd.isna(row.get(f'label_{ac}', 0)) else int(row[f'label_{ac}']) for ac in aspect_cols]
+        masks = [0 if pd.isna(row.get(f'mask_{ac}', 0)) else int(row[f'mask_{ac}']) for ac in aspect_cols]
+        aspect_vectors.append(labels)
+        aspect_masks.append(masks)
+
+    df['aspect_vector'] = aspect_vectors
+    df['aspect_mask_vector'] = aspect_masks
+
+    # review_sentiment → sentiment_id
+    sent_col = 'review_sentiment'
+    if sent_col in df.columns:
+        df['sentiment_id'] = df[sent_col].map(SENTIMENT_LABEL_TO_ID)
+        invalid = df['sentiment_id'].isna().sum()
+        if invalid > 0:
+            print(f"  Warning: {invalid} reviews have unmapped sentiment, dropping")
+            df = df.dropna(subset=['sentiment_id'])
+        df['sentiment_id'] = df['sentiment_id'].astype(int)
+    else:
+        print(f"  Warning: '{sent_col}' column not found, defaulting to neutral(1)")
+        df['sentiment_id'] = 1
+
+    return df
+
+
+def create_dataset_from_wide(
+    wide_csv_path: Path,
+    tokenizer,
+    max_length: int = 128,
+) -> ABSADataset:
+    """
+    Wide format CSV에서 단일 ABSADataset 생성 (mask 포함).
+    분할은 외부에서 처리.
+    """
+    df = _load_wide_csv(wide_csv_path)
+
+    # mask 통계
+    masks_arr = np.array(df['aspect_mask_vector'].tolist())
+    total_cells = masks_arr.size
+    mask1_cells = masks_arr.sum()
+    print(f"  mask=1: {int(mask1_cells)}/{total_cells} ({mask1_cells/total_cells*100:.1f}%)")
+
+    dataset = ABSADataset(
+        texts=df['text'].astype(str).tolist(),
+        sentiment_labels=df['sentiment_id'].tolist(),
+        aspect_labels=df['aspect_vector'].tolist(),
+        tokenizer=tokenizer,
+        max_length=max_length,
+        aspect_masks=df['aspect_mask_vector'].tolist()
+    )
+    print(f"  Dataset: {len(dataset):,} samples (with mask)")
+    return dataset
+
+
+def create_datasets_from_wide(
+    wide_csv_path: Path,
+    tokenizer,
+    max_length: int = 128,
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    random_state: int = 42
+) -> Tuple[ABSADataset, ABSADataset, ABSADataset]:
+    """
+    Wide format CSV에서 Train/Val/Test 데이터셋 생성 (mask 포함).
+    """
+    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6
+
+    df = _load_wide_csv(wide_csv_path)
+
+    # 층화 분할 (sentiment 기준)
+    train_df, temp_df = train_test_split(
+        df, test_size=(1 - train_ratio),
+        stratify=df['sentiment_id'], random_state=random_state
+    )
+    val_adj = val_ratio / (val_ratio + test_ratio)
+    val_df, test_df = train_test_split(
+        temp_df, test_size=(1 - val_adj),
+        stratify=temp_df['sentiment_id'], random_state=random_state
+    )
+
+    print(f"\nWide CSV split:")
+    print(f"  Train: {len(train_df):,} | Val: {len(val_df):,} | Test: {len(test_df):,}")
+
+    datasets = []
+    for name, split_df in [("Train", train_df), ("Val", val_df), ("Test", test_df)]:
+        dataset = ABSADataset(
+            texts=split_df['text'].astype(str).tolist(),
+            sentiment_labels=split_df['sentiment_id'].tolist(),
+            aspect_labels=split_df['aspect_vector'].tolist(),
+            tokenizer=tokenizer,
+            max_length=max_length,
+            aspect_masks=split_df['aspect_mask_vector'].tolist()
+        )
+        datasets.append(dataset)
+
+        masks = np.array(split_df['aspect_mask_vector'].tolist())
+        print(f"  {name}: {len(dataset):,} samples, "
+              f"mask=1: {int(masks.sum())}/{masks.size} ({masks.sum()/masks.size*100:.1f}%)")
 
     return datasets[0], datasets[1], datasets[2]

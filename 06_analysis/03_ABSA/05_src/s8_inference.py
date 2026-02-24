@@ -19,13 +19,13 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Dict
 
-from RQ_absa.model import MultiTaskABSAModel
-from RQ_absa.config import (
+from RQ_absa.s5_model import MultiTaskABSAModel
+from RQ_absa.s1_config import (
     ASPECT_LABELS,
     SENTIMENT_ID_TO_LABEL,
     ASPECT_SENTIMENT_ID_TO_LABEL,
 )
-from RQ_absa.evaluation import apply_none_thresholds
+from RQ_absa.s7_evaluation import apply_none_thresholds
 
 
 class ABSAInference:
@@ -318,7 +318,7 @@ def run_inference_on_reviews(
     chunk_size 단위로 읽고 처리하여 streaming CSV 저장 (메모리 폭발 방지).
     """
     from transformers import AutoTokenizer
-    from RQ_absa.model import load_model
+    from RQ_absa.s5_model import load_model
 
     print("Loading model and tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -395,7 +395,7 @@ def run_inference_from_bigquery(
         return None
 
     from transformers import AutoTokenizer
-    from RQ_absa.model import load_model
+    from RQ_absa.s5_model import load_model
 
     bq = ABSABigQuery()
 

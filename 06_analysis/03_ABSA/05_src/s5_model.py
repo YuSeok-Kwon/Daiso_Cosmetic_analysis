@@ -3,7 +3,10 @@ Multi-task ABSA model (Option A: aspect별 4-class 통합)
 
 출력 구조:
 - sentiment_logits: [B, 3] (리뷰 전체 감성, 보조 태스크)
-- aspect_logits: [B, 11, 4] (aspect별 none/negative/neutral/positive)
+- aspect_logits: [B, 11, 4] (aspect별 none/positive/neutral/negative)
+
+라벨 매핑 (s1_config 기준):
+  0=none, 1=positive, 2=neutral, 3=negative
 """
 import torch
 import torch.nn as nn
@@ -55,7 +58,7 @@ class MultiTaskABSAModel(nn.Module):
     Multi-task model for ABSA (Option A):
     - Sentiment classification: [B, 3] (보조 태스크)
     - Aspect-Sentiment classification: [B, 11, 4] (메인 태스크)
-      각 aspect별 none(0)/negative(1)/neutral(2)/positive(3)
+      각 aspect별 none(0)/positive(1)/neutral(2)/negative(3)
     """
 
     def __init__(
@@ -77,6 +80,10 @@ class MultiTaskABSAModel(nn.Module):
         self.num_aspect_labels = num_aspect_labels
         self.num_aspect_sentiment_classes = num_aspect_sentiment_classes
         self.use_focal_loss = use_focal_loss
+        self.focal_gamma = focal_gamma
+
+        # Masked CE loss에서 직접 사용하기 위해 class weights 저장
+        self._aspect_class_weights = aspect_class_weights
 
         # Pretrained encoder
         config = AutoConfig.from_pretrained(model_name)
@@ -124,7 +131,8 @@ class MultiTaskABSAModel(nn.Module):
         input_ids,
         attention_mask,
         sentiment_labels=None,
-        aspect_labels=None
+        aspect_labels=None,
+        aspect_mask=None
     ):
         """
         Args:
@@ -132,6 +140,7 @@ class MultiTaskABSAModel(nn.Module):
             attention_mask: [B, seq_len]
             sentiment_labels: [B] (optional)
             aspect_labels: [B, 11] LongTensor, 각 값 0~3 (optional)
+            aspect_mask: [B, 11] FloatTensor, 1=학습 포함, 0=loss 제외 (optional)
 
         Returns:
             dict with:
@@ -163,16 +172,65 @@ class MultiTaskABSAModel(nn.Module):
             # Sentiment loss
             sentiment_loss = self.sentiment_loss_fn(sentiment_logits, sentiment_labels)
 
-            # Aspect loss: [B*11, 4] vs [B*11]
-            aspect_loss = self.aspect_loss_fn(
-                aspect_logits.view(-1, self.num_aspect_sentiment_classes),
-                aspect_labels.view(-1)
-            )
+            # Aspect loss: masked CE
+            if aspect_mask is not None:
+                aspect_loss = self._compute_masked_aspect_loss(
+                    aspect_logits, aspect_labels, aspect_mask
+                )
+            else:
+                # 기존 방식 (모든 셀 학습, 하위 호환)
+                aspect_loss = self.aspect_loss_fn(
+                    aspect_logits.view(-1, self.num_aspect_sentiment_classes),
+                    aspect_labels.view(-1)
+                )
 
             output["sentiment_loss"] = sentiment_loss
             output["aspect_loss"] = aspect_loss
 
         return output
+
+    def _compute_masked_aspect_loss(self, aspect_logits, aspect_labels, aspect_mask):
+        """
+        Masked CE loss: mask=1인 셀만 loss에 포함.
+
+        aspect_logits: [B, 11, 4]
+        aspect_labels: [B, 11]
+        aspect_mask: [B, 11] (1=포함, 0=제외)
+        """
+        B = aspect_logits.size(0)
+
+        # Class weights
+        weight = None
+        if self._aspect_class_weights is not None:
+            weight = self._aspect_class_weights.to(aspect_logits.device)
+
+        if self.use_focal_loss:
+            # Focal loss with reduction='none'
+            ce_loss = F.cross_entropy(
+                aspect_logits.view(-1, self.num_aspect_sentiment_classes),
+                aspect_labels.view(-1),
+                reduction="none"
+            )  # [B*11]
+            pt = torch.exp(-ce_loss)
+            focal_weight = (1 - pt) ** self.focal_gamma
+            if weight is not None:
+                alpha_t = weight[aspect_labels.view(-1)]
+                focal_weight = alpha_t * focal_weight
+            per_cell = focal_weight * ce_loss
+        else:
+            per_cell = F.cross_entropy(
+                aspect_logits.view(-1, self.num_aspect_sentiment_classes),
+                aspect_labels.view(-1),
+                weight=weight,
+                reduction="none"
+            )  # [B*11]
+
+        per_cell = per_cell.view(B, self.num_aspect_labels)  # [B, 11]
+        mask_f = aspect_mask.float()
+        masked_loss = (per_cell * mask_f).sum()
+        mask_count = mask_f.sum().clamp(min=1.0)
+
+        return masked_loss / mask_count
 
     def predict(self, input_ids, attention_mask):
         """
@@ -226,13 +284,19 @@ def compute_class_weights(labels: torch.Tensor, num_classes: int) -> torch.Tenso
 
 def compute_aspect_class_weights(
     aspect_labels: torch.Tensor,
-    num_classes: int = 4
+    num_classes: int = 4,
+    aspect_masks: torch.Tensor = None
 ) -> torch.Tensor:
     """
     Aspect-level class weights 계산.
-    aspect_labels: [N, 11] → flatten → [N*11]에서 0~3 분포로 가중치 계산.
+    mask가 제공되면 mask=1인 셀만 사용하여 가중치 계산.
     """
-    flat_labels = aspect_labels.view(-1)
+    if aspect_masks is not None:
+        # mask=1인 셀만 사용
+        mask_flat = aspect_masks.view(-1).bool()
+        flat_labels = aspect_labels.view(-1)[mask_flat]
+    else:
+        flat_labels = aspect_labels.view(-1)
     return compute_class_weights(flat_labels, num_classes)
 
 

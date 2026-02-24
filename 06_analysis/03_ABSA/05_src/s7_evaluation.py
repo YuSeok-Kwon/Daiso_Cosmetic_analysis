@@ -31,19 +31,19 @@ class ABSAEvaluator:
         aspect_sentiment_labels: List[str] = None
     ):
         if sentiment_labels is None:
-            from RQ_absa.config import SENTIMENT_LABELS
+            from RQ_absa.s1_config import SENTIMENT_LABELS
             self.sentiment_labels = SENTIMENT_LABELS
         else:
             self.sentiment_labels = sentiment_labels
 
         if aspect_labels is None:
-            from RQ_absa.config import ASPECT_LABELS
+            from RQ_absa.s1_config import ASPECT_LABELS
             self.aspect_labels = ASPECT_LABELS
         else:
             self.aspect_labels = aspect_labels
 
         if aspect_sentiment_labels is None:
-            from RQ_absa.config import ASPECT_SENTIMENT_LABELS
+            from RQ_absa.s1_config import ASPECT_SENTIMENT_LABELS
             self.aspect_sentiment_labels = ASPECT_SENTIMENT_LABELS
         else:
             self.aspect_sentiment_labels = aspect_sentiment_labels
@@ -53,7 +53,8 @@ class ABSAEvaluator:
         sentiment_preds: np.ndarray,
         sentiment_labels: np.ndarray,
         aspect_preds: np.ndarray,
-        aspect_labels: np.ndarray
+        aspect_labels: np.ndarray,
+        aspect_masks: np.ndarray = None
     ) -> Dict:
         """
         Args:
@@ -61,6 +62,7 @@ class ABSAEvaluator:
             sentiment_labels: [N]
             aspect_preds: [N, 11] (각 값 0~3)
             aspect_labels: [N, 11] (각 값 0~3)
+            aspect_masks: [N, 11] (1=평가 포함, 0=제외, optional)
         """
         metrics = {}
 
@@ -69,11 +71,15 @@ class ABSAEvaluator:
         metrics.update(sentiment_metrics)
 
         # 2. Aspect-Sentiment 4-class 메트릭
-        aspect_sent_metrics = self._evaluate_aspect_sentiment(aspect_preds, aspect_labels)
+        aspect_sent_metrics = self._evaluate_aspect_sentiment(
+            aspect_preds, aspect_labels, aspect_masks
+        )
         metrics.update(aspect_sent_metrics)
 
         # 3. Aspect Detection (none vs not-none) 이진 메트릭
-        detection_metrics = self._evaluate_aspect_detection(aspect_preds, aspect_labels)
+        detection_metrics = self._evaluate_aspect_detection(
+            aspect_preds, aspect_labels, aspect_masks
+        )
         metrics.update(detection_metrics)
 
         return metrics
@@ -103,17 +109,22 @@ class ABSAEvaluator:
         return metrics
 
     def _evaluate_aspect_sentiment(
-        self, preds: np.ndarray, labels: np.ndarray
+        self, preds: np.ndarray, labels: np.ndarray, masks: np.ndarray = None
     ) -> Dict:
         """
         Aspect-Sentiment 4-class 분류 평가.
-        각 aspect별 + 전체 macro F1.
+        masks가 제공되면 mask=1인 셀만 평가.
         """
         metrics = {}
 
-        # 전체 aspect-sentiment (flatten하여 4-class 분류로 평가)
-        flat_preds = preds.flatten()
-        flat_labels = labels.flatten()
+        if masks is not None:
+            # mask=1인 셀만 평가
+            mask_flat = masks.flatten().astype(bool)
+            flat_preds = preds.flatten()[mask_flat]
+            flat_labels = labels.flatten()[mask_flat]
+        else:
+            flat_preds = preds.flatten()
+            flat_labels = labels.flatten()
 
         metrics["aspect_sentiment_accuracy"] = accuracy_score(flat_labels, flat_preds)
         metrics["aspect_sentiment_f1_macro"] = f1_score(
@@ -123,12 +134,21 @@ class ABSAEvaluator:
             flat_labels, flat_preds, average="weighted", zero_division=0
         )
 
-        # aspect별 4-class F1 (각 aspect 컬럼을 독립적으로 평가)
+        # aspect별 4-class F1
         per_aspect_f1 = []
         for i, aspect_name in enumerate(self.aspect_labels):
-            asp_preds = preds[:, i]
-            asp_labels = labels[:, i]
-            f1 = f1_score(asp_labels, asp_preds, average="macro", zero_division=0)
+            if masks is not None:
+                asp_mask = masks[:, i].astype(bool)
+                asp_preds = preds[:, i][asp_mask]
+                asp_labels = labels[:, i][asp_mask]
+            else:
+                asp_preds = preds[:, i]
+                asp_labels = labels[:, i]
+
+            if len(asp_labels) == 0:
+                f1 = 0.0
+            else:
+                f1 = f1_score(asp_labels, asp_preds, average="macro", zero_division=0)
             metrics[f"aspect_f1_{aspect_name}"] = f1
             per_aspect_f1.append(f1)
 
@@ -137,10 +157,11 @@ class ABSAEvaluator:
         return metrics
 
     def _evaluate_aspect_detection(
-        self, preds: np.ndarray, labels: np.ndarray
+        self, preds: np.ndarray, labels: np.ndarray, masks: np.ndarray = None
     ) -> Dict:
         """
         Aspect Detection: none(0) vs not-none(1~3) 이진 분류 평가.
+        masks가 제공되면 mask=1인 셀만 평가.
         """
         metrics = {}
 
@@ -148,9 +169,13 @@ class ABSAEvaluator:
         binary_preds = (preds > 0).astype(int)
         binary_labels = (labels > 0).astype(int)
 
-        # 전체 (flatten)
-        flat_preds = binary_preds.flatten()
-        flat_labels = binary_labels.flatten()
+        if masks is not None:
+            mask_flat = masks.flatten().astype(bool)
+            flat_preds = binary_preds.flatten()[mask_flat]
+            flat_labels = binary_labels.flatten()[mask_flat]
+        else:
+            flat_preds = binary_preds.flatten()
+            flat_labels = binary_labels.flatten()
 
         metrics["aspect_detection_accuracy"] = accuracy_score(flat_labels, flat_preds)
         metrics["aspect_detection_precision"] = precision_score(
@@ -165,9 +190,18 @@ class ABSAEvaluator:
 
         # aspect별 detection F1
         for i, aspect_name in enumerate(self.aspect_labels):
-            asp_preds = binary_preds[:, i]
-            asp_labels = binary_labels[:, i]
-            f1 = f1_score(asp_labels, asp_preds, zero_division=0)
+            if masks is not None:
+                asp_mask = masks[:, i].astype(bool)
+                asp_preds = binary_preds[:, i][asp_mask]
+                asp_labels = binary_labels[:, i][asp_mask]
+            else:
+                asp_preds = binary_preds[:, i]
+                asp_labels = binary_labels[:, i]
+
+            if len(asp_labels) == 0:
+                f1 = 0.0
+            else:
+                f1 = f1_score(asp_labels, asp_preds, zero_division=0)
             metrics[f"aspect_detection_f1_{aspect_name}"] = f1
 
         return metrics
@@ -177,10 +211,15 @@ class ABSAEvaluator:
         sentiment_preds: np.ndarray,
         sentiment_labels: np.ndarray,
         aspect_preds: np.ndarray,
-        aspect_labels: np.ndarray
+        aspect_labels: np.ndarray,
+        aspect_masks: np.ndarray = None
     ):
         print("\n" + "=" * 60)
         print("EVALUATION REPORT")
+        if aspect_masks is not None:
+            mask_total = aspect_masks.sum()
+            total_cells = aspect_masks.size
+            print(f"(mask=1 셀만 평가: {int(mask_total)}/{total_cells})")
         print("=" * 60)
 
         # --- Sentiment ---
@@ -203,7 +242,7 @@ class ABSAEvaluator:
 
         # --- Aspect-Sentiment (4-class) ---
         print("\n### ASPECT-SENTIMENT CLASSIFICATION (4-class) ###\n")
-        metrics = self._evaluate_aspect_sentiment(aspect_preds, aspect_labels)
+        metrics = self._evaluate_aspect_sentiment(aspect_preds, aspect_labels, aspect_masks)
         print(f"Overall Accuracy: {metrics['aspect_sentiment_accuracy']:.4f}")
         print(f"Overall Macro F1: {metrics['aspect_sentiment_f1_macro']:.4f}")
         print(f"Overall Weighted F1: {metrics['aspect_sentiment_f1_weighted']:.4f}")
@@ -216,7 +255,7 @@ class ABSAEvaluator:
 
         # --- Aspect Detection (binary) ---
         print("\n### ASPECT DETECTION (none vs not-none) ###\n")
-        det_metrics = self._evaluate_aspect_detection(aspect_preds, aspect_labels)
+        det_metrics = self._evaluate_aspect_detection(aspect_preds, aspect_labels, aspect_masks)
         print(f"Detection Accuracy:  {det_metrics['aspect_detection_accuracy']:.4f}")
         print(f"Detection Precision: {det_metrics['aspect_detection_precision']:.4f}")
         print(f"Detection Recall:    {det_metrics['aspect_detection_recall']:.4f}")
@@ -229,14 +268,18 @@ class ABSAEvaluator:
                 print(f"  {aspect_name}: {det_metrics[key]:.4f}")
 
         # --- Aspect 빈도 ---
-        print(f"\nAspect frequency (ground truth):")
-        binary_labels = (aspect_labels > 0).astype(int)
-        aspect_counts = binary_labels.sum(axis=0)
+        print(f"\nAspect frequency (ground truth, mask=1 only):")
         for i, aspect_name in enumerate(self.aspect_labels):
-            if i < len(aspect_counts):
-                count = int(aspect_counts[i])
-                ratio = count / len(aspect_labels)
-                print(f"  {aspect_name}: {count} ({ratio * 100:.1f}%)")
+            if aspect_masks is not None:
+                asp_mask = aspect_masks[:, i].astype(bool)
+                asp_labels = aspect_labels[:, i][asp_mask]
+            else:
+                asp_labels = aspect_labels[:, i]
+
+            count = int((asp_labels > 0).sum())
+            total = len(asp_labels)
+            ratio = count / total if total > 0 else 0
+            print(f"  {aspect_name}: {count}/{total} ({ratio * 100:.1f}%)")
 
         print("=" * 60)
 
@@ -280,6 +323,7 @@ def apply_none_thresholds(
 def tune_none_thresholds(
     aspect_probs: np.ndarray,
     aspect_labels: np.ndarray,
+    aspect_masks: np.ndarray = None,
     aspect_labels_list: List[str] = None,
     search_range: tuple = (0.1, 0.95),
     search_step: float = 0.05,
@@ -287,30 +331,19 @@ def tune_none_thresholds(
 ) -> dict:
     """
     Validation set에서 aspect별 최적 none-threshold를 grid search.
-
-    각 aspect에 대해:
-    - threshold 범위를 순회하며
-    - apply_none_thresholds → F1 계산
-    - 최고 F1의 threshold 선택
+    aspect_masks가 제공되면 mask=1인 셀만 사용하여 튜닝.
 
     Args:
         aspect_probs: [N, 11, 4] softmax 확률
         aspect_labels: [N, 11] 정답 (각 값 0~3)
+        aspect_masks: [N, 11] (1=사용, 0=제외, optional)
         aspect_labels_list: aspect 이름 리스트
         search_range: (min, max) threshold 범위
         search_step: grid search 간격
         metric: 최적화 대상 ("f1" or "detection_f1")
-
-    Returns:
-        {
-            "thresholds": np.ndarray [11],
-            "per_aspect_results": [{aspect, threshold, f1, detection_f1}, ...],
-            "default_f1": float,  # threshold=0.5일 때 전체 F1
-            "tuned_f1": float     # 튜닝된 threshold 적용 시 전체 F1
-        }
     """
     if aspect_labels_list is None:
-        from RQ_absa.config import ASPECT_LABELS
+        from RQ_absa.s1_config import ASPECT_LABELS
         aspect_labels_list = ASPECT_LABELS
 
     num_aspects = aspect_probs.shape[1]
@@ -321,29 +354,43 @@ def tune_none_thresholds(
 
     print("\n" + "=" * 60)
     print("NONE-THRESHOLD TUNING (per-aspect)")
+    if aspect_masks is not None:
+        print(f"(mask=1 셀만 사용: {int(aspect_masks.sum())}/{aspect_masks.size})")
     print("=" * 60)
 
     for j in range(num_aspects):
         aspect_name = aspect_labels_list[j] if j < len(aspect_labels_list) else f"aspect_{j}"
-        true_labels = aspect_labels[:, j]
+
+        # mask=1인 샘플만 필터링
+        if aspect_masks is not None:
+            asp_mask = aspect_masks[:, j].astype(bool)
+            true_labels = aspect_labels[:, j][asp_mask]
+            probs_j = aspect_probs[:, j][asp_mask]  # [M, 4]
+        else:
+            true_labels = aspect_labels[:, j]
+            probs_j = aspect_probs[:, j]  # [N, 4]
+
+        if len(true_labels) == 0:
+            per_aspect_results.append({
+                "aspect": aspect_name, "threshold": 0.5, "f1": 0.0, "detection_f1": 0.0
+            })
+            print(f"  {aspect_name}: no mask=1 samples, skipping")
+            continue
 
         best_score = -1.0
         best_t = 0.5
         best_detail = {}
 
         for t in candidates:
-            # 이 aspect만 threshold 적용
-            p_none = aspect_probs[:, j, 0]
+            p_none = probs_j[:, 0]
             is_none = p_none >= t
-            non_none_probs = aspect_probs[:, j, 1:]
+            non_none_probs = probs_j[:, 1:]
             best_non_none = np.argmax(non_none_probs, axis=-1) + 1
 
             preds_j = np.where(is_none, 0, best_non_none)
 
-            # 4-class F1
             f1_4class = f1_score(true_labels, preds_j, average="macro", zero_division=0)
 
-            # Detection F1 (none vs not-none)
             binary_preds = (preds_j > 0).astype(int)
             binary_labels = (true_labels > 0).astype(int)
             det_f1 = f1_score(binary_labels, binary_preds, zero_division=0)
@@ -364,14 +411,24 @@ def tune_none_thresholds(
         print(f"  {aspect_name}: threshold={best_t:.2f}  "
               f"F1={best_detail['f1']:.4f}  Det.F1={best_detail['detection_f1']:.4f}")
 
-    # 전체 비교: default(0.5) vs tuned
+    # 전체 비교: default(0.5) vs tuned (mask=1만)
     default_thresholds = np.full(num_aspects, 0.5)
     default_preds = apply_none_thresholds(aspect_probs, default_thresholds)
     tuned_preds = apply_none_thresholds(aspect_probs, best_thresholds)
 
-    flat_labels = aspect_labels.flatten()
-    default_f1 = f1_score(flat_labels, default_preds.flatten(), average="macro", zero_division=0)
-    tuned_f1 = f1_score(flat_labels, tuned_preds.flatten(), average="macro", zero_division=0)
+    if aspect_masks is not None:
+        mask_flat = aspect_masks.flatten().astype(bool)
+        flat_labels = aspect_labels.flatten()[mask_flat]
+        default_f1 = f1_score(flat_labels, default_preds.flatten()[mask_flat],
+                              average="macro", zero_division=0)
+        tuned_f1 = f1_score(flat_labels, tuned_preds.flatten()[mask_flat],
+                            average="macro", zero_division=0)
+    else:
+        flat_labels = aspect_labels.flatten()
+        default_f1 = f1_score(flat_labels, default_preds.flatten(),
+                              average="macro", zero_division=0)
+        tuned_f1 = f1_score(flat_labels, tuned_preds.flatten(),
+                            average="macro", zero_division=0)
 
     improvement = tuned_f1 - default_f1
     print(f"\nOverall Macro F1: default={default_f1:.4f} → tuned={tuned_f1:.4f} "
@@ -401,6 +458,7 @@ def collect_predictions(
             "sentiment_labels": [N],
             "aspect_probs": [N, 11, 4],
             "aspect_labels": [N, 11],
+            "aspect_masks": [N, 11],
         }
     """
     import torch
@@ -412,6 +470,7 @@ def collect_predictions(
     all_sentiment_labels = []
     all_aspect_probs = []
     all_aspect_labels = []
+    all_aspect_masks = []
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Collecting predictions"):
@@ -430,12 +489,20 @@ def collect_predictions(
             all_aspect_probs.extend(aspect_probs.cpu().numpy())
             all_aspect_labels.extend(aspect_labels_batch.cpu().numpy())
 
-    return {
+            if "aspect_mask" in batch:
+                all_aspect_masks.extend(batch["aspect_mask"].cpu().numpy())
+
+    result = {
         "sentiment_preds": np.array(all_sentiment_preds),
         "sentiment_labels": np.array(all_sentiment_labels),
         "aspect_probs": np.array(all_aspect_probs),
         "aspect_labels": np.array(all_aspect_labels),
     }
+
+    if all_aspect_masks:
+        result["aspect_masks"] = np.array(all_aspect_masks)
+
+    return result
 
 
 def evaluate_test_set(
@@ -464,18 +531,22 @@ def evaluate_test_set(
     else:
         aspect_preds = np.argmax(results["aspect_probs"], axis=-1)
 
+    aspect_masks = results.get("aspect_masks")
+
     metrics = evaluator.evaluate(
         sentiment_preds=results["sentiment_preds"],
         sentiment_labels=results["sentiment_labels"],
         aspect_preds=aspect_preds,
-        aspect_labels=results["aspect_labels"]
+        aspect_labels=results["aspect_labels"],
+        aspect_masks=aspect_masks
     )
 
     evaluator.print_report(
         sentiment_preds=results["sentiment_preds"],
         sentiment_labels=results["sentiment_labels"],
         aspect_preds=aspect_preds,
-        aspect_labels=results["aspect_labels"]
+        aspect_labels=results["aspect_labels"],
+        aspect_masks=aspect_masks
     )
 
     return metrics
