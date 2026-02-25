@@ -1,0 +1,38 @@
+{
+  "_description": "Stage 3A Design Rule Override — 디자인 aspect를 모델 예측 대신 키워드 규칙으로 판단",
+  "_source": "05_src/s1_config.py (DESIGN_RULE_CONFIG + KEYWORD_GATE_CONFIG)",
+  "_version": "stage3a_v1_20260225",
+
+  "design_rule_config": {
+    "positive_keywords": [
+      "예쁘", "이쁘", "귀엽", "귀여", "깔끔", "고급", "앙증", "세련"
+    ],
+    "negative_keywords": [
+      "촌스럽", "투박", "칙칙", "유치", "조잡", "싸구려", "못생"
+    ],
+    "structure_keywords": [
+      "디자인", "패키지", "용기", "뚜껑", "케이스"
+    ],
+    "structure_pos_modifiers": [
+      "좋", "마음에 들", "괜찮"
+    ],
+    "structure_neg_modifiers": [
+      "별로", "아쉽", "불편", "안 좋", "안좋"
+    ]
+  },
+
+  "keyword_gate_config": {
+    "디자인": [
+      "용기", "뚜껑", "케이스", "패키지", "디자인", "스포이드", "펌프", "튜브",
+      "예쁘", "이쁘", "귀엽", "귀여", "깔끔", "고급", "앙증",
+      "팁", "입구", "마감"
+    ]
+  },
+
+  "tier_logic": {
+    "Tier1_positive": "positive_keywords 중 하나 포함 → positive(1)",
+    "Tier2_negative": "negative_keywords 중 하나 포함 → negative(3)",
+    "Tier3_structure": "structure_keywords + pos_modifiers → positive(1) / neg_modifiers → negative(3)",
+    "default": "매칭 없음 → none(0)"
+  }
+}

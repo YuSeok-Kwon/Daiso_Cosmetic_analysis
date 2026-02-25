@@ -1,0 +1,73 @@
+{
+  "bundle_name": "prod_bundle_stage3a_v1",
+  "created_at": "2026-02-25",
+  "stage": "3A",
+  "description": "Stage 3A 운영 번들 — 모델 재학습 없이 후처리만 변경한 최종 운영 세팅",
+
+  "model": {
+    "name": "KcELECTRA-base MultiTask ABSA",
+    "base_model": "beomi/KcELECTRA-base",
+    "trained_stage": "Stage 2 (골든셋 파인튜닝)",
+    "num_aspects": 8,
+    "aspects": [
+      "배송/포장", "가격/가성비", "사용감/성능", "용량/휴대",
+      "디자인", "재질/냄새", "재구매", "색상/발색"
+    ],
+    "sentiment_classes": ["none", "positive", "neutral", "negative"]
+  },
+
+  "post_processing": {
+    "none_thresholds": {
+      "배송/포장": 0.15,
+      "가격/가성비": 0.10,
+      "사용감/성능": 0.03,
+      "용량/휴대": 0.20,
+      "디자인": 0.50,
+      "재질/냄새": 0.15,
+      "재구매": 0.15,
+      "색상/발색": 0.10
+    },
+    "none_threshold_semantics": "P(none) >= threshold → none 예측. 낮출수록 검출 줄어듦 (직관과 반대)",
+    "polar_threshold": 0.50,
+    "polar_semantics": "max(P(pos), P(neg)) < polar_threshold → neutral로 전환",
+    "design_rule_override": true,
+    "design_rule_semantics": "디자인 aspect는 모델 예측을 무시하고 키워드 Tier1/2/3 규칙으로 판단"
+  },
+
+  "golden_test_performance": {
+    "dataset": "golden_test.csv (266행, 8 aspects)",
+    "detection_precision": 0.6708,
+    "detection_recall": 0.6173,
+    "detection_f1": 0.6429,
+    "detection_f0.5": 0.6594,
+    "mentioned_sentiment_macro_f1": 0.4367,
+    "go_decision": "ALL GO (4/4 criteria passed)"
+  },
+
+  "files": {
+    "best_model_stage2_v1.pt": {
+      "description": "Stage 2 학습 모델 체크포인트",
+      "md5": "eb45407672f402a5dc89e8c5e35eb245",
+      "size_bytes": 1302458291
+    },
+    "none_thresholds_stage3a.json": {
+      "description": "Per-aspect none threshold + polar_threshold + design_rule 플래그",
+      "md5": "ef7a0a07d3a708aaf5dd40c85e1a3fe8"
+    },
+    "design_rule_config.json": {
+      "description": "Design Rule Override 키워드 세트 (Tier1~3) + Keyword Gate",
+      "md5": "35f9682e14adb920fa19770a5ab3761a"
+    },
+    "golden_eval_metrics_test.json": {
+      "description": "Golden Test 최종 평가 결과 (GO 판정 증빙)",
+      "md5": "60a1231247f98cc577416b5bb9811ca2"
+    }
+  },
+
+  "integrity_check": "python -c \"import hashlib, pathlib, json; m=json.load(open('MANIFEST.json')); [print(f'{f}: {\"OK\" if hashlib.md5(pathlib.Path(f).read_bytes()).hexdigest()==info[\"md5\"] else \"MISMATCH\"}') for f,info in m['files'].items() if 'md5' in info]\"",
+
+  "usage": {
+    "loader": "from RQ_absa.s1_config import load_prod_bundle; bundle = load_prod_bundle('07_models/prod_bundle_stage3a_v1_20260225')",
+    "inference": "ABSAInference.from_bundle(bundle_path)"
+  }
+}

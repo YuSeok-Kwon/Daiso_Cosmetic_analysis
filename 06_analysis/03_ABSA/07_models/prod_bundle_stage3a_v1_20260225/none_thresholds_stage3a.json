@@ -1,0 +1,58 @@
+{
+  "thresholds": [
+    0.15,
+    0.1,
+    0.03,
+    0.2,
+    0.5,
+    0.15,
+    0.15,
+    0.1
+  ],
+  "per_aspect_results": [
+    {
+      "aspect": "배송/포장",
+      "threshold": 0.15
+    },
+    {
+      "aspect": "가격/가성비",
+      "threshold": 0.1
+    },
+    {
+      "aspect": "사용감/성능",
+      "threshold": 0.03
+    },
+    {
+      "aspect": "용량/휴대",
+      "threshold": 0.2
+    },
+    {
+      "aspect": "디자인",
+      "threshold": 0.5
+    },
+    {
+      "aspect": "재질/냄새",
+      "threshold": 0.15
+    },
+    {
+      "aspect": "재구매",
+      "threshold": 0.15
+    },
+    {
+      "aspect": "색상/발색",
+      "threshold": 0.1
+    }
+  ],
+  "polar_threshold": 0.5,
+  "design_rule": true,
+  "tuning_source": "golden_dev",
+  "stage": "3a",
+  "usage_threshold_note": "0.10→0.03: P(none)>=t이면 none 예측, 낮출수록 검출 줄어듦",
+  "detection_dev": {
+    "precision": 0.6716,
+    "recall": 0.6118,
+    "f1": 0.6403,
+    "f0.5": 0.6587
+  },
+  "mentioned_f1_dev": 0.4367
+}

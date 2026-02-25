@@ -1,0 +1,498 @@
+{
+  "detection": {
+    "precision": 0.6708,
+    "recall": 0.6173,
+    "f1": 0.6429,
+    "f0.5": 0.6594,
+    "accuracy": 0.8582,
+    "per_aspect": {
+      "배송/포장": {
+        "precision": 0.8049,
+        "recall": 0.6735,
+        "f1": 0.7333,
+        "f0.5": 0.7746
+      },
+      "가격/가성비": {
+        "precision": 0.6053,
+        "recall": 0.451,
+        "f1": 0.5169,
+        "f0.5": 0.5665
+      },
+      "사용감/성능": {
+        "precision": 0.7576,
+        "recall": 0.6711,
+        "f1": 0.7117,
+        "f0.5": 0.7386
+      },
+      "용량/휴대": {
+        "precision": 0.5526,
+        "recall": 0.525,
+        "f1": 0.5385,
+        "f0.5": 0.5469
+      },
+      "디자인": {
+        "precision": 0.5,
+        "recall": 0.3235,
+        "f1": 0.3929,
+        "f0.5": 0.4508
+      },
+      "재질/냄새": {
+        "precision": 0.6136,
+        "recall": 0.675,
+        "f1": 0.6429,
+        "f0.5": 0.625
+      },
+      "재구매": {
+        "precision": 0.8125,
+        "recall": 0.8125,
+        "f1": 0.8125,
+        "f0.5": 0.8125
+      },
+      "색상/발색": {
+        "precision": 0.589,
+        "recall": 0.7167,
+        "f1": 0.6466,
+        "f0.5": 0.6108
+      }
+    }
+  },
+  "mentioned_sentiment": {
+    "n_cells": 439,
+    "macro_f1": 0.3775,
+    "weighted_f1": 0.585,
+    "per_aspect": {
+      "배송/포장": {
+        "n": 49,
+        "f1": 0.3426
+      },
+      "가격/가성비": {
+        "n": 51,
+        "f1": 0.225
+      },
+      "사용감/성능": {
+        "n": 149,
+        "f1": 0.4119
+      },
+      "용량/휴대": {
+        "n": 40,
+        "f1": 0.1991
+      },
+      "디자인": {
+        "n": 34,
+        "f1": 0.1202
+      },
+      "재질/냄새": {
+        "n": 40,
+        "f1": 0.3901
+      },
+      "재구매": {
+        "n": 16,
+        "f1": 0.2716
+      },
+      "색상/발색": {
+        "n": 60,
+        "f1": 0.4047
+      }
+    }
+  },
+  "neutral_analysis": {
+    "gt_neutral_total": 58,
+    "pred_none": 25,
+    "pred_positive": 14,
+    "pred_neutral": 10,
+    "pred_negative": 9,
+    "recall": 0.1724
+  },
+  "neutral_overall": {
+    "gt_neutral_cells": 58,
+    "pred_neutral_cells": 81
+  },
+  "per_aspect_f1": {
+    "배송/포장": {
+      "f1_macro": 0.5506,
+      "f1_weighted": 0.8926,
+      "n": 266,
+      "confusion_matrix": [
+        [
+          209,
+          0,
+          0,
+          8
+        ],
+        [
+          10,
+          4,
+          1,
+          0
+        ],
+        [
+          3,
+          0,
+          0,
+          0
+        ],
+        [
+          3,
+          0,
+          0,
+          28
+        ]
+      ]
+    },
+    "가격/가성비": {
+      "f1_macro": 0.417,
+      "f1_weighted": 0.8193,
+      "n": 266,
+      "confusion_matrix": [
+        [
+          200,
+          12,
+          2,
+          1
+        ],
+        [
+          17,
+          21,
+          0,
+          0
+        ],
+        [
+          3,
+          1,
+          0,
+          0
+        ],
+        [
+          8,
+          0,
+          0,
+          1
+        ]
+      ]
+    },
+    "사용감/성능": {
+      "f1_macro": 0.5342,
+      "f1_weighted": 0.6011,
+      "n": 261,
+      "confusion_matrix": [
+        [
+          80,
+          17,
+          8,
+          7
+        ],
+        [
+          28,
+          34,
+          10,
+          1
+        ],
+        [
+          8,
+          7,
+          5,
+          2
+        ],
+        [
+          13,
+          1,
+          2,
+          38
+        ]
+      ]
+    },
+    "용량/휴대": {
+      "f1_macro": 0.3922,
+      "f1_weighted": 0.8165,
+      "n": 266,
+      "confusion_matrix": [
+        [
+          209,
+          2,
+          9,
+          6
+        ],
+        [
+          12,
+          2,
+          5,
+          2
+        ],
+        [
+          4,
+          2,
+          0,
+          1
+        ],
+        [
+          3,
+          0,
+          2,
+          7
+        ]
+      ]
+    },
+    "디자인": {
+      "f1_macro": 0.3215,
+      "f1_weighted": 0.8274,
+      "n": 266,
+      "confusion_matrix": [
+        [
+          221,
+          9,
+          0,
+          2
+        ],
+        [
+          7,
+          4,
+          0,
+          0
+        ],
+        [
+          2,
+          2,
+          0,
+          0
+        ],
+        [
+          14,
+          4,
+          0,
+          1
+        ]
+      ]
+    },
+    "재질/냄새": {
+      "f1_macro": 0.5546,
+      "f1_weighted": 0.8658,
+      "n": 266,
+      "confusion_matrix": [
+        [
+          209,
+          1,
+          14,
+          2
+        ],
+        [
+          8,
+          3,
+          2,
+          0
+        ],
+        [
+          1,
+          0,
+          3,
+          5
+        ],
+        [
+          4,
+          0,
+          0,
+          14
+        ]
+      ]
+    },
+    "재구매": {
+      "f1_macro": 0.5738,
+      "f1_weighted": 0.9672,
+      "n": 266,
+      "confusion_matrix": [
+        [
+          247,
+          3,
+          0,
+          0
+        ],
+        [
+          3,
+          11,
+          0,
+          0
+        ],
+        [
+          0,
+          2,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "색상/발색": {
+      "f1_macro": 0.5356,
+      "f1_weighted": 0.7987,
+      "n": 265,
+      "confusion_matrix": [
+        [
+          175,
+          8,
+          9,
+          13
+        ],
+        [
+          5,
+          18,
+          6,
+          2
+        ],
+        [
+          4,
+          0,
+          2,
+          1
+        ],
+        [
+          8,
+          1,
+          1,
+          12
+        ]
+      ]
+    }
+  },
+  "distribution": [
+    {
+      "aspect": "배송/포장",
+      "n": 266,
+      "gt_mention": 49,
+      "gt_pct": 18.4,
+      "pred_mention": 41,
+      "pred_pct": 15.4,
+      "diff_pp": -3.0,
+      "gt_none": 217,
+      "gt_pos": 15,
+      "gt_neu": 3,
+      "gt_neg": 31,
+      "pred_none": 225,
+      "pred_pos": 4,
+      "pred_neu": 1,
+      "pred_neg": 36
+    },
+    {
+      "aspect": "가격/가성비",
+      "n": 266,
+      "gt_mention": 51,
+      "gt_pct": 19.2,
+      "pred_mention": 38,
+      "pred_pct": 14.3,
+      "diff_pp": -4.9,
+      "gt_none": 215,
+      "gt_pos": 38,
+      "gt_neu": 4,
+      "gt_neg": 9,
+      "pred_none": 228,
+      "pred_pos": 34,
+      "pred_neu": 2,
+      "pred_neg": 2
+    },
+    {
+      "aspect": "사용감/성능",
+      "n": 261,
+      "gt_mention": 149,
+      "gt_pct": 57.1,
+      "pred_mention": 132,
+      "pred_pct": 50.6,
+      "diff_pp": -6.5,
+      "gt_none": 112,
+      "gt_pos": 73,
+      "gt_neu": 22,
+      "gt_neg": 54,
+      "pred_none": 129,
+      "pred_pos": 59,
+      "pred_neu": 25,
+      "pred_neg": 48
+    },
+    {
+      "aspect": "용량/휴대",
+      "n": 266,
+      "gt_mention": 40,
+      "gt_pct": 15.0,
+      "pred_mention": 38,
+      "pred_pct": 14.3,
+      "diff_pp": -0.8,
+      "gt_none": 226,
+      "gt_pos": 21,
+      "gt_neu": 7,
+      "gt_neg": 12,
+      "pred_none": 228,
+      "pred_pos": 6,
+      "pred_neu": 16,
+      "pred_neg": 16
+    },
+    {
+      "aspect": "디자인",
+      "n": 266,
+      "gt_mention": 34,
+      "gt_pct": 12.8,
+      "pred_mention": 22,
+      "pred_pct": 8.3,
+      "diff_pp": -4.5,
+      "gt_none": 232,
+      "gt_pos": 11,
+      "gt_neu": 4,
+      "gt_neg": 19,
+      "pred_none": 244,
+      "pred_pos": 19,
+      "pred_neu": 0,
+      "pred_neg": 3
+    },
+    {
+      "aspect": "재질/냄새",
+      "n": 266,
+      "gt_mention": 40,
+      "gt_pct": 15.0,
+      "pred_mention": 44,
+      "pred_pct": 16.5,
+      "diff_pp": 1.5,
+      "gt_none": 226,
+      "gt_pos": 13,
+      "gt_neu": 9,
+      "gt_neg": 18,
+      "pred_none": 222,
+      "pred_pos": 4,
+      "pred_neu": 19,
+      "pred_neg": 21
+    },
+    {
+      "aspect": "재구매",
+      "n": 266,
+      "gt_mention": 16,
+      "gt_pct": 6.0,
+      "pred_mention": 16,
+      "pred_pct": 6.0,
+      "diff_pp": 0.0,
+      "gt_none": 250,
+      "gt_pos": 14,
+      "gt_neu": 2,
+      "gt_neg": 0,
+      "pred_none": 250,
+      "pred_pos": 16,
+      "pred_neu": 0,
+      "pred_neg": 0
+    },
+    {
+      "aspect": "색상/발색",
+      "n": 265,
+      "gt_mention": 60,
+      "gt_pct": 22.6,
+      "pred_mention": 73,
+      "pred_pct": 27.5,
+      "diff_pp": 4.9,
+      "gt_none": 205,
+      "gt_pos": 31,
+      "gt_neu": 7,
+      "gt_neg": 22,
+      "pred_none": 192,
+      "pred_pos": 27,
+      "pred_neu": 18,
+      "pred_neg": 28
+    }
+  ]
+}
