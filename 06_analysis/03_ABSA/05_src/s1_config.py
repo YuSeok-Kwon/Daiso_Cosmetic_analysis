@@ -122,6 +122,26 @@ KEYWORD_GATE_CONFIG = {
     ],
 }
 
+# Design rule-based override (Stage 3A: 디자인을 모델→규칙으로 전환)
+# 모델 예측을 무시하고 키워드 매칭으로 디자인 감성을 판단
+DESIGN_RULE_CONFIG = {
+    "positive_keywords": [
+        "예쁘", "이쁘", "귀엽", "귀여", "깔끔", "고급", "앙증", "세련",
+    ],
+    "negative_keywords": [
+        "촌스럽", "투박", "칙칙", "유치", "조잡", "싸구려", "못생",
+    ],
+    "structure_keywords": [
+        "디자인", "패키지", "용기", "뚜껑", "케이스",
+    ],
+    "structure_pos_modifiers": [
+        "좋", "마음에 들", "괜찮",
+    ],
+    "structure_neg_modifiers": [
+        "별로", "아쉽", "불편", "안 좋", "안좋",
+    ],
+}
+
 # None-threshold tuning configuration
 # 학습 완료 후 val set에서 aspect별 최적 threshold를 grid search
 THRESHOLD_TUNING_CONFIG = {
@@ -134,9 +154,10 @@ THRESHOLD_TUNING_CONFIG = {
 }
 
 # Golden set split configuration (Stage 2: dev/test 분할)
+# 70/30으로 test 분산↓ + dev 튜닝 안정↑
 GOLDEN_SPLIT_CONFIG = {
-    "dev_ratio": 0.60,
-    "test_ratio": 0.40,
+    "dev_ratio": 0.70,
+    "test_ratio": 0.30,
     "random_state": 42,
 }
 

@@ -2,8 +2,8 @@
 Dataset preparation for ABSA model training (Option A: aspect별 4-class 통합)
 
 리뷰 단위로 그룹화하여 각 aspect별 sentiment를 예측하는 구조.
-출력 라벨: [11] (각 값 0~3: none/positive/neutral/negative)
-출력 마스크: [11] (1=학습에 포함, 0=loss에서 제외)
+출력 라벨: [K] (각 값 0~3: none/positive/neutral/negative, K=len(ASPECT_LABELS))
+출력 마스크: [K] (1=학습에 포함, 0=loss에서 제외)
 """
 import json
 import pandas as pd
@@ -84,7 +84,7 @@ class ABSADataProcessor:
         for review_id, group in grouped:
             first_row = group.iloc[0]
 
-            # 11-dim 초기화
+            # K-dim 초기화
             aspect_vector = [0] * len(self.aspect_labels)
             aspect_mask = [0] * len(self.aspect_labels)  # 기본: unknown
 
@@ -251,8 +251,8 @@ class ABSADataset(Dataset):
     """
     PyTorch Dataset for ABSA model (Option A).
 
-    aspect_label: [11] LongTensor (각 값 0~3: none/pos/neu/neg)
-    aspect_mask: [11] FloatTensor (1=학습 포함, 0=loss 제외)
+    aspect_label: [K] LongTensor (각 값 0~3: none/pos/neu/neg)
+    aspect_mask: [K] FloatTensor (1=학습 포함, 0=loss 제외)
     """
 
     def __init__(

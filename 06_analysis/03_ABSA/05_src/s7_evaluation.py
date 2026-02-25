@@ -610,6 +610,70 @@ def apply_thresholds_with_polar(
     return preds
 
 
+def apply_design_rule_override(texts, aspect_preds, aspect_labels_list=None):
+    """디자인 aspect를 키워드 규칙으로 override (모델 예측 무시).
+
+    규칙 우선순위:
+      Tier1: positive 키워드 → positive(1)
+      Tier2: negative 키워드 → negative(3)
+      Tier3: 구조물 키워드 + 감성 수식어 → positive(1) 또는 negative(3)
+      매칭 없음 → none(0)
+    """
+    from RQ_absa.s1_config import DESIGN_RULE_CONFIG, ASPECT_LABELS
+
+    if aspect_labels_list is None:
+        aspect_labels_list = list(ASPECT_LABELS)
+
+    if "디자인" not in aspect_labels_list:
+        return aspect_preds
+
+    design_idx = aspect_labels_list.index("디자인")
+    cfg = DESIGN_RULE_CONFIG
+    preds = aspect_preds.copy()
+    stats = {"positive": 0, "negative": 0, "none": 0}
+
+    for i, text in enumerate(texts):
+        t = str(text)
+        assigned = False
+
+        # Tier 1: positive 키워드
+        if any(kw in t for kw in cfg["positive_keywords"]):
+            preds[i, design_idx] = 1
+            stats["positive"] += 1
+            assigned = True
+
+        # Tier 2: negative 키워드
+        if not assigned and any(kw in t for kw in cfg["negative_keywords"]):
+            preds[i, design_idx] = 3
+            stats["negative"] += 1
+            assigned = True
+
+        # Tier 3: 구조물 + 수식어
+        if not assigned:
+            has_struct = any(kw in t for kw in cfg["structure_keywords"])
+            if has_struct:
+                if any(m in t for m in cfg["structure_pos_modifiers"]):
+                    preds[i, design_idx] = 1
+                    stats["positive"] += 1
+                    assigned = True
+                elif any(m in t for m in cfg["structure_neg_modifiers"]):
+                    preds[i, design_idx] = 3
+                    stats["negative"] += 1
+                    assigned = True
+
+        # 매칭 없음 → none
+        if not assigned:
+            preds[i, design_idx] = 0
+            stats["none"] += 1
+
+    total = len(texts)
+    mentioned = stats["positive"] + stats["negative"]
+    print(f"  Design rule override: pos={stats['positive']}, "
+          f"neg={stats['negative']}, none={stats['none']} "
+          f"(언급률 {mentioned/total*100:.1f}%)")
+    return preds
+
+
 def tune_polar_threshold(
     aspect_probs: np.ndarray,
     aspect_labels: np.ndarray,

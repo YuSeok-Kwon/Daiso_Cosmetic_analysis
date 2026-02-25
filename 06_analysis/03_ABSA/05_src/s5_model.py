@@ -351,7 +351,9 @@ def load_model(
         num_aspect_sentiment_classes=num_aspect_sentiment_classes
     )
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    result = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    if result.unexpected_keys:
+        print(f"  무시된 키(loss weight 등): {result.unexpected_keys}")
     model.to(device)
     model.eval()
 

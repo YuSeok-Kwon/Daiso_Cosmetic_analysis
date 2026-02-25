@@ -11,13 +11,15 @@ Inference pipeline for ABSA model (Option A: aspect별 4-class 통합)
     ]
 }
 """
+import json
+import hashlib
 import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from RQ_absa.s5_model import MultiTaskABSAModel, get_best_device
 from RQ_absa.s1_config import (
@@ -26,7 +28,11 @@ from RQ_absa.s1_config import (
     ASPECT_SENTIMENT_ID_TO_LABEL,
     KEYWORD_GATE_CONFIG,
 )
-from RQ_absa.s7_evaluation import apply_none_thresholds, apply_thresholds_with_polar
+from RQ_absa.s7_evaluation import (
+    apply_none_thresholds,
+    apply_thresholds_with_polar,
+    apply_design_rule_override,
+)
 
 
 class ABSAInference:
@@ -47,6 +53,7 @@ class ABSAInference:
         ambiguous_sentiment_threshold: float = 0.6,
         none_thresholds: np.ndarray = None,
         polar_threshold: float = None,
+        use_design_rule: bool = False,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -55,6 +62,7 @@ class ABSAInference:
         self.ambiguous_sentiment_threshold = ambiguous_sentiment_threshold
         self.none_thresholds = none_thresholds  # [K] per-aspect threshold
         self.polar_threshold = polar_threshold  # polar 확신 기준 (neutral 복원용)
+        self.use_design_rule = use_design_rule  # Design Rule Override 사용 여부
 
         if device is None:
             self.device = torch.device(get_best_device())
@@ -83,7 +91,116 @@ class ABSAInference:
         else:
             print("Using default argmax (no threshold tuning)")
 
+        if self.use_design_rule:
+            print("Using design rule override (디자인 aspect → 키워드 규칙)")
+
         print(f"Inference initialized on device: {self.device}")
+
+    @classmethod
+    def from_bundle(
+        cls,
+        bundle_path: str,
+        model_name: str = "beomi/KcELECTRA-base",
+        batch_size: int = 128,
+        verify_integrity: bool = True,
+    ) -> "ABSAInference":
+        """운영 번들에서 모델 + threshold + 설정을 한 번에 로드.
+
+        Args:
+            bundle_path: prod_bundle 디렉토리 경로
+            model_name: HuggingFace 모델 이름 (토크나이저용)
+            batch_size: 추론 배치 크기
+            verify_integrity: True이면 MD5 체크섬 검증
+
+        Returns:
+            ABSAInference 인스턴스 (운영 세팅 완전 적용)
+        """
+        from transformers import AutoTokenizer
+        from RQ_absa.s5_model import load_model
+
+        bundle = Path(bundle_path)
+        manifest_path = bundle / "MANIFEST.json"
+
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"MANIFEST.json이 없습니다: {bundle}")
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        print(f"=== 운영 번들 로드: {manifest['bundle_name']} ===")
+        print(f"  Stage: {manifest['stage']}, Created: {manifest['created_at']}")
+
+        # (1) MD5 무결성 검증
+        if verify_integrity:
+            print("  무결성 검증 중...")
+            for fname, info in manifest["files"].items():
+                fpath = bundle / fname
+                if not fpath.exists():
+                    raise FileNotFoundError(f"번들 파일 누락: {fpath}")
+                if "md5" in info:
+                    actual_md5 = hashlib.md5(fpath.read_bytes()).hexdigest()
+                    if actual_md5 != info["md5"]:
+                        raise ValueError(
+                            f"MD5 불일치: {fname}\n"
+                            f"  예상: {info['md5']}\n  실제: {actual_md5}"
+                        )
+            print("  무결성 검증 OK")
+
+        # (2) 모델 파일 찾기 (best_model*.pt)
+        model_files = list(bundle.glob("best_model*.pt"))
+        if not model_files:
+            raise FileNotFoundError(f"모델 파일(best_model*.pt)이 없습니다: {bundle}")
+        model_path = model_files[0]
+
+        # (3) 모델 + 토크나이저 로드
+        print(f"  모델 로드: {model_path.name}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = load_model(checkpoint_path=model_path, model_name=model_name)
+
+        # (4) Threshold 로드
+        threshold_path = bundle / "none_thresholds_stage3a.json"
+        if not threshold_path.exists():
+            threshold_path = list(bundle.glob("none_thresholds*.json"))
+            threshold_path = threshold_path[0] if threshold_path else None
+
+        none_thresholds = None
+        polar_threshold = None
+        if threshold_path and Path(threshold_path).exists():
+            with open(threshold_path, "r", encoding="utf-8") as f:
+                tdata = json.load(f)
+            none_thresholds = np.array(tdata["thresholds"])
+            polar_threshold = tdata.get("polar_threshold")
+
+        # (5) Design Rule Config 로드 → 런타임 override
+        use_design_rule = False
+        drule_path = bundle / "design_rule_config.json"
+        if drule_path.exists():
+            with open(drule_path, "r", encoding="utf-8") as f:
+                drule_data = json.load(f)
+            import RQ_absa.s1_config as cfg
+            if "design_rule_config" in drule_data:
+                cfg.DESIGN_RULE_CONFIG = drule_data["design_rule_config"]
+                print("  Design Rule Config: 번들에서 로드 완료")
+            if "keyword_gate_config" in drule_data:
+                cfg.KEYWORD_GATE_CONFIG = drule_data["keyword_gate_config"]
+                print("  Keyword Gate Config: 번들에서 로드 완료")
+            # threshold JSON의 design_rule 플래그도 확인
+            if threshold_path and Path(threshold_path).exists():
+                use_design_rule = tdata.get("design_rule", False)
+            else:
+                use_design_rule = True  # design_rule_config.json 존재 = 사용
+
+        print(f"  GO 기준 검증: {manifest.get('golden_test_performance', {}).get('go_decision', 'N/A')}")
+        print("=== 번들 로드 완료 ===\n")
+
+        return cls(
+            model=model,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            none_thresholds=none_thresholds,
+            polar_threshold=polar_threshold,
+            use_design_rule=use_design_rule,
+        )
 
     def predict_batch(self, texts: List[str]) -> Dict:
         """
@@ -217,7 +334,7 @@ class ABSAInference:
         """DataFrame 전체 추론"""
         print(f"Running inference on {len(df):,} reviews...")
 
-        texts = df[text_column].astype(str).tolist()
+        texts = df[text_column].fillna("").astype(str).tolist()
 
         all_sentiment_preds = []
         all_sentiment_scores = []
@@ -245,6 +362,12 @@ class ABSAInference:
         all_sentiment_confidence = np.array(all_sentiment_confidence)
         all_aspect_preds = np.array(all_aspect_preds)
         all_aspect_probs = np.array(all_aspect_probs)
+
+        # Design Rule Override (디자인 aspect → 키워드 규칙으로 완전 대체)
+        if self.use_design_rule:
+            all_aspect_preds = apply_design_rule_override(
+                texts, all_aspect_preds, aspect_labels_list=self.aspect_labels
+            )
 
         # 키워드 게이트 적용 (non-none이지만 키워드 미포함 → none override)
         if KEYWORD_GATE_CONFIG:
