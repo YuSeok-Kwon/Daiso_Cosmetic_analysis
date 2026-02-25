@@ -56,7 +56,7 @@
     },
     "design_rule_config.json": {
       "description": "Design Rule Override 키워드 세트 (Tier1~3) + Keyword Gate",
-      "md5": "35f9682e14adb920fa19770a5ab3761a"
+      "md5": "879b0444338383b0868635e1f3ef929c"
     },
     "golden_eval_metrics_test.json": {
       "description": "Golden Test 최종 평가 결과 (GO 판정 증빙)",

@@ -27,6 +27,7 @@ from RQ_absa.s1_config import (
     SENTIMENT_ID_TO_LABEL,
     ASPECT_SENTIMENT_ID_TO_LABEL,
     KEYWORD_GATE_CONFIG,
+    KEYWORD_FORCE_ON_CONFIG,
 )
 from RQ_absa.s7_evaluation import (
     apply_none_thresholds,
@@ -184,6 +185,9 @@ class ABSAInference:
             if "keyword_gate_config" in drule_data:
                 cfg.KEYWORD_GATE_CONFIG = drule_data["keyword_gate_config"]
                 print("  Keyword Gate Config: 번들에서 로드 완료")
+            if "keyword_force_on_config" in drule_data:
+                cfg.KEYWORD_FORCE_ON_CONFIG = drule_data["keyword_force_on_config"]
+                print("  Keyword Force-On Config: 번들에서 로드 완료")
             # threshold JSON의 design_rule 플래그도 확인
             if threshold_path and Path(threshold_path).exists():
                 use_design_rule = tdata.get("design_rule", False)
@@ -291,6 +295,26 @@ class ABSAInference:
 
         return gated
 
+    def _apply_keyword_force_on(
+        self, texts: List[str], aspect_preds: np.ndarray
+    ) -> np.ndarray:
+        """키워드 포함 시 해당 aspect를 강제 활성화 (FN 보정)."""
+        gated = aspect_preds.copy()
+        force_count = 0
+        for aspect_name, config in KEYWORD_FORCE_ON_CONFIG.items():
+            if aspect_name not in self.aspect_labels:
+                continue
+            j = self.aspect_labels.index(aspect_name)
+            for i, text in enumerate(texts):
+                if gated[i, j] != 0:  # 이미 활성화면 스킵
+                    continue
+                if any(kw in str(text) for kw in config["keywords"]):
+                    gated[i, j] = config["sentiment"]
+                    force_count += 1
+        if force_count > 0:
+            print(f"  Keyword force-on: {force_count}건 활성화")
+        return gated
+
     def _extract_aspect_sentiments(
         self, aspect_preds: np.ndarray, aspect_probs: np.ndarray
     ) -> List[List[Dict]]:
@@ -372,6 +396,10 @@ class ABSAInference:
         # 키워드 게이트 적용 (non-none이지만 키워드 미포함 → none override)
         if KEYWORD_GATE_CONFIG:
             all_aspect_preds = self._apply_keyword_gate(texts, all_aspect_preds)
+
+        # 키워드 강제 ON (FN 보정: 키워드 포함인데 none인 경우 활성화)
+        if KEYWORD_FORCE_ON_CONFIG:
+            all_aspect_preds = self._apply_keyword_force_on(texts, all_aspect_preds)
 
         # aspect별 sentiment 추출 (none 제외)
         aspect_sentiments = self._extract_aspect_sentiments(all_aspect_preds, all_aspect_probs)
