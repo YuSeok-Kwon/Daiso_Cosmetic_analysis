@@ -19,9 +19,9 @@ from RQ_absa.s8_inference import ABSAInference
 
 PROJECT_ROOT = Path(__file__).parent.parent
 BUNDLE_PATH = PROJECT_ROOT / "07_models" / "prod_bundle_stage3a_v1_20260225"
-REVIEWS_PATH = PROJECT_ROOT.parent.parent / "02_processed_data" / "csv" / "final" / "reviews_text.csv"
-OUTPUT_PATH = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_full.csv"
-SUMMARY_PATH = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_summary.json"
+REVIEWS_PATH = PROJECT_ROOT / "02_processed_data" / "reviews_text_no_reorder.csv"
+OUTPUT_PATH = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_v2_full.csv"
+SUMMARY_PATH = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_v2_summary.json"
 
 CHUNK_SIZE = 10_000
 
