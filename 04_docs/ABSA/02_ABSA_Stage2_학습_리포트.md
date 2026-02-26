@@ -387,4 +387,4 @@ eval_golden.py --split test --polar
 
 ---
 
-> **다음 문서:**[Stage 2 골든셋 평가](ABSA_Stage2_골든셋_평가.md) → [Stage 3A 후처리 튜닝 리포트](ABSA_Stage3A_후처리_튜닝_리포트.md)
+> **다음 문서:**[Stage 2 골든셋 평가](03_ABSA_Stage2_골든셋_평가.md) → [Stage 3A 후처리 튜닝 리포트](04_ABSA_Stage3A_후처리_튜닝_리포트.md)

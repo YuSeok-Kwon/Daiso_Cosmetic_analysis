@@ -336,7 +336,14 @@
 
 | 문서 | 설명 |
 |------|------|
-| [ABSA_Stage3A_전체추론_결과.md](ABSA_Stage3A_전체추론_결과.md) | 전체 추론 실행 과정 및 파이프라인 상세 |
-| [ABSA_Stage3A_후처리_튜닝_리포트.md](ABSA_Stage3A_후처리_튜닝_리포트.md) | Stage 3A 후처리 튜닝 + GO/NO-GO 판정 |
-| [ABSA_Stage2_학습_리포트.md](ABSA_Stage2_학습_리포트.md) | Stage 2 재학습 과정 및 결과 |
-| [ABSA_파이프라인.md](ABSA_파이프라인.md) | ABSA 전체 파이프라인 설명 |
+| [ABSA_Stage3A_전체추론_결과.md](05_ABSA_Stage3A_전체추론_결과.md) | 전체 추론 실행 과정 및 파이프라인 상세 |
+| [ABSA_Stage3A_후처리_튜닝_리포트.md](04_ABSA_Stage3A_후처리_튜닝_리포트.md) | Stage 3A 후처리 튜닝 + GO/NO-GO 판정 |
+| [ABSA_Stage2_학습_리포트.md](02_ABSA_Stage2_학습_리포트.md) | Stage 2 재학습 과정 및 결과 |
+| [ABSA_파이프라인.md](00_ABSA_파이프라인.md) | ABSA 전체 파이프라인 설명 |
+| [ABSA_QC_후처리_개선_전략.md](07_ABSA_QC_후처리_개선_전략.md) | QC 오류 패턴 분석 + 후처리 v3/v4 설계 |
+| [ABSA_Stage4_재학습_리포트.md](08_ABSA_Stage4_재학습_리포트.md) | neutral 보강 재학습 (← **후속**) |
+
+---
+
+**후속:** 이 EDA 결과를 기반으로 QC 분석 수행 → 후처리 v3/v4 설계 → neutral 보강 재학습(Stage 4) 진행.
+자세한 내용은 [ABSA_QC_후처리_개선_전략.md](07_ABSA_QC_후처리_개선_전략.md) → [ABSA_Stage4_재학습_리포트.md](08_ABSA_Stage4_재학습_리포트.md) 참조.
