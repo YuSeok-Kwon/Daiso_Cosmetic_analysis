@@ -266,6 +266,10 @@ class ABSAInference:
     ) -> np.ndarray:
         """키워드 게이트: non-none 예측이지만 키워드 미포함 시 none(0)으로 override.
 
+        Stage 4C: 정규표현식 기반 매칭으로 전환.
+        - 활용형 제한, lookahead/lookbehind, 경계 처리로 오탐 최소화
+        - KEYWORD_GATE_CONFIG 값이 정규표현식 패턴 리스트
+
         Args:
             texts: [N] 리뷰 텍스트 리스트
             aspect_preds: [N, K] aspect 예측 (0=none, 1=pos, 2=neu, 3=neg)
@@ -276,22 +280,28 @@ class ABSAInference:
         gated = aspect_preds.copy()
         gate_count = 0
 
-        for aspect_name, keywords in KEYWORD_GATE_CONFIG.items():
+        # aspect별 정규식 패턴을 사전 컴파일 (성능 최적화)
+        compiled_gates = {}
+        for aspect_name, patterns in KEYWORD_GATE_CONFIG.items():
             if aspect_name not in self.aspect_labels:
                 continue
             j = self.aspect_labels.index(aspect_name)
-            keywords_lower = [kw.lower() for kw in keywords]
+            compiled_gates[aspect_name] = (
+                j,
+                [re.compile(p, re.IGNORECASE) for p in patterns],
+            )
 
+        for aspect_name, (j, compiled_patterns) in compiled_gates.items():
             for i, text in enumerate(texts):
                 if gated[i, j] == 0:  # 이미 none이면 스킵
                     continue
-                text_lower = str(text).lower()
-                if not any(kw in text_lower for kw in keywords_lower):
+                text_str = str(text)
+                if not any(p.search(text_str) for p in compiled_patterns):
                     gated[i, j] = 0  # 키워드 미포함 → none으로 override
                     gate_count += 1
 
         if gate_count > 0:
-            print(f"  Keyword gate: {gate_count}건 override (non-none → none)")
+            print(f"  Keyword gate (regex): {gate_count}건 override (non-none → none)")
 
         return gated
 

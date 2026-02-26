@@ -89,7 +89,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(cfg["model_name"])
 
     # ── 데이터 로드 ──
-    data_dir = PROCESSED_DATA_DIR / "final" / "absa"
+    data_dir = PROCESSED_DATA_DIR / "training"
     train_path = data_dir / "absa_wide_train_augmented.csv"
     val_path = data_dir / "absa_wide_val.csv"
 

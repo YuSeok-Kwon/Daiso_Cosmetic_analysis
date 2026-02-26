@@ -25,7 +25,7 @@ def main():
     cfg = GOLDEN_SPLIT_CONFIG
 
     # ── 입력 ──
-    golden_dir = PROCESSED_DATA_DIR / "final" / "golden"
+    golden_dir = PROCESSED_DATA_DIR / "golden"
     input_path = golden_dir / "golden_set_wide_full_eval.csv"
     assert input_path.exists(), f"골든셋 파일 없음: {input_path}"
 

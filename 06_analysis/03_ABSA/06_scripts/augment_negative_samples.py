@@ -61,7 +61,7 @@ def drop_removed_aspect_columns(df: pd.DataFrame) -> tuple:
 
 def main():
     # ── 입력 ──
-    data_dir = PROCESSED_DATA_DIR / "final" / "absa"
+    data_dir = PROCESSED_DATA_DIR / "training"
     input_path = data_dir / "absa_wide_train.csv"
     assert input_path.exists(), f"학습 데이터 없음: {input_path}"
 

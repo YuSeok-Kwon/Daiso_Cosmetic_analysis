@@ -209,7 +209,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="ABSA 모델 평가")
-    parser.add_argument("--golden-set", type=str, default="02_processed_data/validation/golden_set.xlsx",
+    parser.add_argument("--golden-set", type=str, default="01_outputs/data/validation/v1/golden_set.xlsx",
                         help="Golden Set 파일 경로")
     parser.add_argument("--model", type=str, default="gpt-4o-mini",
                         help="평가할 모델")

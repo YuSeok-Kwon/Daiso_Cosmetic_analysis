@@ -6,16 +6,16 @@ ABSA BigQuery 연동 실행 스크립트
     python 06_scripts/run_absa_bq.py --stats
 
     # BigQuery에서 리뷰 로드 → CSV 내보내기
-    python 06_scripts/run_absa_bq.py --export --limit 10000 --output 04_outputs/reviews_for_labeling.csv
+    python 06_scripts/run_absa_bq.py --export --limit 10000 --output 01_outputs/reviews_for_labeling.csv
 
     # GPT 라벨링 (BigQuery + CSV 저장)
-    python 06_scripts/run_absa_bq.py --label --limit 1000 --output 04_outputs/labeled.jsonl --save-csv 04_outputs/labeled.csv
+    python 06_scripts/run_absa_bq.py --label --limit 1000 --output 01_outputs/labeled.jsonl --save-csv 01_outputs/labeled.csv
 
     # 모델 추론 (BigQuery + CSV 저장)
-    python 06_scripts/run_absa_bq.py --infer --limit 10000 --save-csv 04_outputs/inference_results.csv
+    python 06_scripts/run_absa_bq.py --infer --limit 10000 --save-csv 01_outputs/inference_results.csv
 
     # BigQuery 저장 안하고 CSV만 저장
-    python 06_scripts/run_absa_bq.py --infer --no-save-bq --save-csv 04_outputs/results.csv
+    python 06_scripts/run_absa_bq.py --infer --no-save-bq --save-csv 01_outputs/results.csv
 """
 import argparse
 from pathlib import Path
@@ -62,7 +62,7 @@ def main():
 
     # 2. 리뷰 내보내기
     if args.export:
-        output_path = args.output or f'04_outputs/reviews_export_{get_timestamp()}.csv'
+        output_path = args.output or f'01_outputs/reviews_export_{get_timestamp()}.csv'
         print(f"리뷰 내보내기: {output_path}")
         bq.export_for_training(output_path, limit=args.limit)
         return
@@ -71,7 +71,7 @@ def main():
     if args.label:
         from RQ_absa.s3_labeling import label_from_bigquery
 
-        output_path = Path(args.output or f'04_outputs/labeled_{get_timestamp()}.jsonl')
+        output_path = Path(args.output or f'01_outputs/labeled_{get_timestamp()}.jsonl')
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # CSV 저장 경로
@@ -114,7 +114,7 @@ def main():
         if save_csv is None and args.output:
             save_csv = args.output
         elif save_csv is None and not args.no_save_bq:
-            save_csv = f'04_outputs/inference/inference_{get_timestamp()}.csv'
+            save_csv = f'01_outputs/inference/inference_{get_timestamp()}.csv'
 
         print("=" * 60)
         print("모델 추론 시작")

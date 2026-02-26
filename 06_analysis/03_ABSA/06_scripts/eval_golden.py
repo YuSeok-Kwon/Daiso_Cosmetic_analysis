@@ -37,7 +37,7 @@ from RQ_absa.s4_dataset import create_dataset_from_wide
 from RQ_absa.s5_model import MultiTaskABSAModel
 from RQ_absa.s7_evaluation import (
     apply_none_thresholds, apply_thresholds_with_polar, collect_predictions,
-    apply_design_rule_override,
+    apply_design_rule_override, apply_full_postprocess,
 )
 
 NUM_ASPECTS = len(ASPECT_LABELS)
@@ -51,9 +51,11 @@ def get_device() -> str:
     return "cpu"
 
 
-def load_checkpoint_and_thresholds(device):
+def load_checkpoint_and_thresholds(device, ckpt_dir=None):
     """best_model.pt 로드 + none_thresholds + polar_threshold 추출"""
-    ckpt_path = CHECKPOINT_DIR / "best_model.pt"
+    if ckpt_dir is None:
+        ckpt_dir = CHECKPOINT_DIR
+    ckpt_path = ckpt_dir / "best_model.pt"
     checkpoint = torch.load(str(ckpt_path), map_location=device, weights_only=False)
 
     model = MultiTaskABSAModel(model_name=TRAIN_CONFIG["model_name"])
@@ -67,7 +69,7 @@ def load_checkpoint_and_thresholds(device):
     # threshold 로드 (JSON 우선: Stage 3A 튜닝 반영)
     polar_threshold = None
     thresholds = None
-    thresholds_path = CHECKPOINT_DIR / "none_thresholds.json"
+    thresholds_path = ckpt_dir / "none_thresholds.json"
     if thresholds_path.exists():
         with open(thresholds_path) as f:
             data = json.load(f)
@@ -522,13 +524,22 @@ def main():
                         help="polar_threshold 직접 지정 (예: 0.70)")
     parser.add_argument("--usage-threshold", type=float, default=None,
                         help="사용감/성능 threshold 직접 지정 (예: 0.25)")
+    parser.add_argument("--postprocess", action="store_true",
+                        help="전체 후처리 체인 적용 (design_rule + keyword_gate + force_on + QC Phase2)")
+    parser.add_argument("--sweep-usage", action="store_true",
+                        help="사용감/성능 threshold grid search (0.03~0.50, --postprocess 포함)")
+    parser.add_argument("--checkpoint-dir", type=str, default=None,
+                        help="체크포인트 디렉토리 (기본: config의 CHECKPOINT_DIR)")
     args = parser.parse_args()
 
     device = get_device()
     print(f"Device: {device}")
 
+    # 체크포인트 디렉토리 결정
+    ckpt_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else CHECKPOINT_DIR
+
     # 모델 + threshold 로드
-    model, thresholds, polar_threshold = load_checkpoint_and_thresholds(device)
+    model, thresholds, polar_threshold = load_checkpoint_and_thresholds(device, ckpt_dir)
 
     if not args.polar:
         polar_threshold = None
@@ -546,7 +557,7 @@ def main():
         print(f"사용감/성능 threshold override: {old_val:.2f} → {args.usage_threshold:.2f}")
 
     # 골든셋 로드 (dev/test/full)
-    golden_dir = PROCESSED_DATA_DIR / "final" / "golden"
+    golden_dir = PROCESSED_DATA_DIR / "golden" / "v1"
     if args.split == "dev":
         golden_csv = golden_dir / "golden_dev.csv"
     elif args.split == "test":
@@ -563,16 +574,99 @@ def main():
     golden_loader = DataLoader(golden_dataset, batch_size=cfg["batch_size"],
                                shuffle=False, num_workers=0)
 
-    # 추론
+    # 추론 (1회만 — sweep에서도 재사용)
     results = run_inference(model, golden_loader, device, thresholds, polar_threshold)
-    preds = results["aspect_preds"]
     labels = results["aspect_labels"]
     masks = results["aspect_masks"]
 
-    # 디자인 규칙 기반 override
-    if args.design_rule:
+    # 텍스트 + 별점 로드 (postprocess / sweep에서 사용)
+    golden_df = None
+    texts = None
+    ratings = None
+    if args.postprocess or args.sweep_usage or args.design_rule:
         golden_df = pd.read_csv(golden_csv)
         texts = golden_df["text"].astype(str).tolist()
+        ratings = golden_df["rating"].values if "rating" in golden_df.columns else None
+
+    # ── sweep 모드: 사용감/성능 threshold grid search ──
+    if args.sweep_usage:
+        usage_idx = ASPECT_LABELS.index("사용감/성능")
+        candidates = [0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50]
+
+        print("\n" + "=" * 78)
+        print("  사용감/성능 threshold SWEEP (with full postprocess)")
+        print("=" * 78)
+        print(f"  {'threshold':>10s}  {'Precision':>9s}  {'Recall':>9s}  {'F1':>9s}  {'F0.5':>9s}  {'mentions':>8s}")
+        print(f"  {'─'*10}  {'─'*9}  {'─'*9}  {'─'*9}  {'─'*9}  {'─'*8}")
+
+        sweep_results = []
+        for t in candidates:
+            # threshold 복사 + 사용감/성능만 변경
+            sweep_thresholds = thresholds.copy()
+            sweep_thresholds[usage_idx] = t
+
+            # threshold 재적용
+            if polar_threshold is not None:
+                sweep_preds = apply_thresholds_with_polar(
+                    results["aspect_probs"], sweep_thresholds, polar_threshold
+                )
+            else:
+                sweep_preds = apply_none_thresholds(results["aspect_probs"], sweep_thresholds)
+
+            # 전체 후처리
+            sweep_preds = apply_full_postprocess(
+                texts, sweep_preds, ratings,
+                aspect_probs=results["aspect_probs"],
+                use_design_rule=True,
+            )
+
+            # 사용감/성능 detection metrics
+            bp = (sweep_preds[:, usage_idx] > 0).astype(int)
+            bl = (labels[:, usage_idx] > 0).astype(int)
+            if masks is not None:
+                m = masks[:, usage_idx].astype(bool)
+                bp = bp[m]
+                bl = bl[m]
+            prec = precision_score(bl, bp, zero_division=0)
+            rec = recall_score(bl, bp, zero_division=0)
+            f1 = f1_score(bl, bp, zero_division=0)
+            f05 = _compute_fbeta(bl, bp, beta=0.5)
+            mentions = int(bp.sum())
+
+            sweep_results.append({
+                "threshold": t, "precision": prec, "recall": rec,
+                "f1": f1, "f0.5": f05, "mentions": mentions,
+            })
+            marker = " ◀ current" if abs(t - thresholds[usage_idx]) < 0.001 else ""
+            print(f"  {t:10.2f}  {prec:9.4f}  {rec:9.4f}  {f1:9.4f}  {f05:9.4f}  {mentions:8d}{marker}")
+
+        # best by F0.5
+        best = max(sweep_results, key=lambda x: x["f0.5"])
+        print(f"\n  ★ Best by F0.5: threshold={best['threshold']:.2f}  "
+              f"P={best['precision']:.4f}  R={best['recall']:.4f}  "
+              f"F0.5={best['f0.5']:.4f}")
+        print("=" * 78)
+
+        # sweep 결과 JSON 저장
+        sweep_json_path = ckpt_dir / f"usage_threshold_sweep_{args.split}.json"
+        with open(sweep_json_path, "w") as f:
+            json.dump({"aspect": "사용감/성능", "results": sweep_results,
+                       "best_f05": best}, f, ensure_ascii=False, indent=2)
+        print(f"Sweep 결과 저장: {sweep_json_path}")
+        return
+
+    # ── 일반 평가 모드 ──
+    preds = results["aspect_preds"]
+
+    # 후처리 적용 (--postprocess가 --design-rule을 포함)
+    if args.postprocess:
+        print(f"\n전체 후처리 체인 적용 (n={len(texts)})...")
+        preds = apply_full_postprocess(
+            texts, preds, ratings,
+            aspect_probs=results["aspect_probs"],
+            use_design_rule=True,
+        )
+    elif args.design_rule:
         print(f"\n디자인 규칙 기반 override 적용 (n={len(texts)})...")
         preds = apply_design_rule_override(texts, preds)
 
@@ -586,12 +680,14 @@ def main():
     suffix = f"_{args.split}"
     if args.polar or args.polar_value is not None:
         suffix += "_polar"
-    if args.design_rule:
+    if args.postprocess:
+        suffix += "_postproc"
+    elif args.design_rule:
         suffix += "_drule"
     if args.usage_threshold is not None:
         suffix += f"_ut{args.usage_threshold:.2f}"
-    report_path = CHECKPOINT_DIR / f"golden_eval_report{suffix}.txt"
-    json_path = CHECKPOINT_DIR / f"golden_eval_metrics{suffix}.json"
+    report_path = ckpt_dir / f"golden_eval_report{suffix}.txt"
+    json_path = ckpt_dir / f"golden_eval_metrics{suffix}.json"
 
     print_report(det_results, sent_results, aspect_details, dist_df,
                  args.split, polar_used=(polar_threshold is not None),

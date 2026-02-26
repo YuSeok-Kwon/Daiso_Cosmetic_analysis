@@ -31,7 +31,16 @@
     "polar_threshold": 0.50,
     "polar_semantics": "max(P(pos), P(neg)) < polar_threshold → neutral로 전환",
     "design_rule_override": true,
-    "design_rule_semantics": "디자인 aspect는 모델 예측을 무시하고 키워드 Tier1/2/3 규칙으로 판단"
+    "design_rule_semantics": "디자인 aspect는 모델 예측을 무시하고 키워드 Tier1/2/3 규칙으로 판단",
+    "qc_postprocess_v3": {
+      "rescue_delivery": "P0, enabled",
+      "price_force_on": "P0, enabled (keyword_force_on으로 구현)",
+      "auxiliary_delivery": "P1, enabled",
+      "hallucination_gate": "P1, enabled",
+      "ambiguous_enhancement": "P1, enabled",
+      "secondary_rescue": "P2, disabled",
+      "contrast_correction": "P2, disabled"
+    }
   },
 
   "golden_test_performance": {
@@ -41,7 +50,8 @@
     "detection_f1": 0.6429,
     "detection_f0.5": 0.6594,
     "mentioned_sentiment_macro_f1": 0.4367,
-    "go_decision": "ALL GO (4/4 criteria passed)"
+    "go_decision": "ALL GO (4/4 criteria passed)",
+    "_pending_update": "v3 후처리 반영 후 재평가 필요: eval_golden.py --split test --polar --postprocess"
   },
 
   "files": {
@@ -55,8 +65,8 @@
       "md5": "ef7a0a07d3a708aaf5dd40c85e1a3fe8"
     },
     "design_rule_config.json": {
-      "description": "Design Rule Override 키워드 세트 (Tier1~3) + Keyword Gate",
-      "md5": "879b0444338383b0868635e1f3ef929c"
+      "description": "Design Rule Override + Keyword Gate + QC Postprocess Config (v3)",
+      "md5": "ef92a9de8b188a9ba2580c5cd8d8945e"
     },
     "golden_eval_metrics_test.json": {
       "description": "Golden Test 최종 평가 결과 (GO 판정 증빙)",

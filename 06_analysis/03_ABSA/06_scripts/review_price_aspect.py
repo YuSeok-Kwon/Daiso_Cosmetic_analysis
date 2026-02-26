@@ -11,9 +11,10 @@ import re
 import glob
 import copy
 import os
+from pathlib import Path
 
 # ── 경로 설정 ──
-BASE = "/Users/yu_seok/Documents/workspace/01_현재진행/01_nbCamp/nb_Project/Why-pi/06_analysis/03_ABSA/02_processed_data/interim"
+BASE = str(Path(__file__).parent.parent / "01_outputs" / "data" / "labeling")
 ASPECT_CSV = f"{BASE}/v2/aspect/가격_가성비_aspect.csv"
 FINAL_CSV = f"{BASE}/v2/absa_results_final.csv"
 BULK_PATTERN = f"{BASE}/v1/step1_team*.csv"

@@ -19,16 +19,16 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = PROJECT_ROOT.parent.parent / "02_processed_data" / "csv" / "final"
+DATA_ROOT = PROJECT_ROOT.parent.parent / "02_outputs" / "data" / "csv" / "final"
 
 # 입력
 BUNDLE_DIR = PROJECT_ROOT / "07_models" / "prod_bundle_stage3a_v1_20260225"
-INFERENCE_CSV = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_v2_full.csv"
-SUMMARY_JSON = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_v2_summary.json"
+INFERENCE_CSV = PROJECT_ROOT / "01_outputs" / "inference" / "absa_results_stage3a_v3_full.csv"
+SUMMARY_JSON = PROJECT_ROOT / "01_outputs" / "inference" / "absa_results_stage3a_v3_summary.json"
 
 # 출력: 버전 폴더
-VERSION = "stage3a_v2_20260225"
-SNAPSHOT_DIR = PROJECT_ROOT / "04_outputs" / "snapshot" / VERSION
+VERSION = "stage3a_v3_20260225"
+SNAPSHOT_DIR = PROJECT_ROOT / "01_outputs" / "snapshot" / VERSION
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 

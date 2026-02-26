@@ -24,8 +24,8 @@ from RQ_absa.s8_inference import ABSAInference
 
 PROJECT_ROOT = Path(__file__).parent.parent
 BUNDLE_PATH = PROJECT_ROOT / "07_models" / "prod_bundle_stage3a_v1_20260225"
-REVIEWS_PATH = PROJECT_ROOT.parent.parent / "02_processed_data" / "csv" / "final" / "reviews_text.csv"
-OUTPUT_DIR = PROJECT_ROOT / "04_outputs" / "smoke_test"
+REVIEWS_PATH = PROJECT_ROOT.parent.parent / "02_outputs" / "data" / "csv" / "final" / "reviews_text.csv"
+OUTPUT_DIR = PROJECT_ROOT / "01_outputs" / "smoke_test"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

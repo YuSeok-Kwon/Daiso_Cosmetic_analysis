@@ -731,3 +731,87 @@ def tune_polar_threshold(
     print("=" * 60)
 
     return {"polar_threshold": round(best_t, 2), "best_f1": round(best_f1, 4), "results": results}
+
+
+def apply_full_postprocess(
+    texts, aspect_preds, ratings=None, *, aspect_probs=None, use_design_rule=True
+):
+    """전체 후처리 체인: design_rule + keyword_gate(regex) + force_on.
+
+    eval_golden.py, reapply_qc_postprocess.py 등에서 독립 함수로 호출.
+    s8_inference.py의 인스턴스 메서드와 동일 로직.
+
+    Args:
+        texts: [N] 리뷰 텍스트 리스트
+        aspect_preds: [N, K] aspect 예측 (0=none, 1=pos, 2=neu, 3=neg)
+        ratings: [N] 별점 (현재 미사용, 확장용)
+        aspect_probs: [N, K, 4] softmax 확률 (현재 미사용, 확장용)
+        use_design_rule: 디자인 규칙 override 적용 여부
+
+    Returns:
+        aspect_preds: [N, K] 후처리 적용 후
+    """
+    import re
+    from RQ_absa.s1_config import (
+        ASPECT_LABELS, KEYWORD_GATE_CONFIG, KEYWORD_FORCE_ON_CONFIG,
+    )
+
+    preds = aspect_preds.copy()
+    aspect_labels_list = list(ASPECT_LABELS)
+
+    # (1) Design Rule Override
+    if use_design_rule:
+        preds = apply_design_rule_override(texts, preds, aspect_labels_list)
+
+    # (2) Keyword Gate — 정규식 기반 (Stage 4C)
+    if KEYWORD_GATE_CONFIG:
+        gate_count = 0
+        compiled_gates = {}
+        for aspect_name, patterns in KEYWORD_GATE_CONFIG.items():
+            if aspect_name not in aspect_labels_list:
+                continue
+            j = aspect_labels_list.index(aspect_name)
+            compiled_gates[aspect_name] = (
+                j,
+                [re.compile(p, re.IGNORECASE) for p in patterns],
+            )
+
+        for aspect_name, (j, compiled_patterns) in compiled_gates.items():
+            for i, text in enumerate(texts):
+                if preds[i, j] == 0:
+                    continue
+                text_str = str(text)
+                if not any(p.search(text_str) for p in compiled_patterns):
+                    preds[i, j] = 0
+                    gate_count += 1
+
+        if gate_count > 0:
+            print(f"  Keyword gate (regex): {gate_count}건 override (non-none → none)")
+
+    # (3) Keyword Force-On (FN 보정)
+    if KEYWORD_FORCE_ON_CONFIG:
+        force_count = 0
+        for aspect_name, config in KEYWORD_FORCE_ON_CONFIG.items():
+            if aspect_name not in aspect_labels_list:
+                continue
+            j = aspect_labels_list.index(aspect_name)
+            keywords = config.get("keywords", [])
+            sentiment = config.get("sentiment", 1)
+            neg_keywords = config.get("negative_keywords", [])
+            neg_sentiment = config.get("negative_sentiment", 3)
+
+            for i, text in enumerate(texts):
+                if preds[i, j] != 0:
+                    continue
+                text_str = str(text)
+                if neg_keywords and any(kw in text_str for kw in neg_keywords):
+                    preds[i, j] = neg_sentiment
+                    force_count += 1
+                elif any(kw in text_str for kw in keywords):
+                    preds[i, j] = sentiment
+                    force_count += 1
+
+        if force_count > 0:
+            print(f"  Keyword force-on: {force_count}건 활성화")
+
+    return preds

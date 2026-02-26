@@ -125,7 +125,7 @@ def main():
     print(f"Base thresholds: {base_thresholds.round(2).tolist()}")
 
     # ── golden_dev 로드 ──
-    golden_csv = PROCESSED_DATA_DIR / "final" / "golden" / "golden_dev.csv"
+    golden_csv = PROCESSED_DATA_DIR / "golden" / "v1" / "golden_dev.csv"
     print(f"Golden dev: {golden_csv}")
     golden_df = pd.read_csv(golden_csv)
     texts = golden_df["text"].astype(str).tolist()

@@ -1,12 +1,20 @@
 """
-Stage 3A 운영 번들로 전체 리뷰 추론 (43만 건)
-- 번들에서 모델+threshold+design rule 로드
+전체 리뷰 추론 (323K건)
+- 번들 또는 체크포인트 디렉토리에서 모델+threshold+design rule 로드
 - 10K 청크 단위 streaming CSV 저장
 - 중간 진행률 + ETA 출력
+
+사용법:
+  # Stage 3A 번들 (기본)
+  python run_full_inference.py
+
+  # S4B 체크포인트
+  python run_full_inference.py --model-dir checkpoints_stage4b --tag stage4b
 """
 import sys
 import time
 import json
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -19,29 +27,122 @@ from RQ_absa.s8_inference import ABSAInference
 
 PROJECT_ROOT = Path(__file__).parent.parent
 BUNDLE_PATH = PROJECT_ROOT / "07_models" / "prod_bundle_stage3a_v1_20260225"
-REVIEWS_PATH = PROJECT_ROOT / "02_processed_data" / "reviews_text_no_reorder.csv"
-OUTPUT_PATH = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_v2_full.csv"
-SUMMARY_PATH = PROJECT_ROOT / "04_outputs" / "inference" / "absa_results_stage3a_v2_summary.json"
+REVIEWS_PATH = PROJECT_ROOT / "01_outputs" / "data" / "source" / "reviews_text_no_reorder.csv"
 
 CHUNK_SIZE = 10_000
 
 
+def _load_from_checkpoint_dir(model_dir: Path, batch_size: int = 128) -> ABSAInference:
+    """체크포인트 디렉토리에서 모델+threshold+design rule 직접 로드.
+
+    번들이 아닌 일반 체크포인트 디렉토리(예: checkpoints_stage4b/)에서
+    모델을 로드하고, design_rule_config는 운영 번들에서 가져온다.
+    """
+    from transformers import AutoTokenizer
+    from RQ_absa.s5_model import load_model
+    import RQ_absa.s1_config as cfg
+
+    model_path = model_dir / "best_model.pt"
+    if not model_path.exists():
+        raise FileNotFoundError(f"모델 파일이 없습니다: {model_path}")
+
+    print(f"=== 체크포인트 직접 로드: {model_dir.name} ===")
+
+    # (1) 모델 + 토크나이저
+    model_name = "beomi/KcELECTRA-base"
+    print(f"  모델 로드: {model_path.name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = load_model(checkpoint_path=model_path, model_name=model_name)
+
+    # (2) Threshold 로드
+    none_thresholds = None
+    polar_threshold = None
+    use_design_rule = False
+
+    threshold_path = model_dir / "none_thresholds.json"
+    if threshold_path.exists():
+        with open(threshold_path, "r", encoding="utf-8") as f:
+            tdata = json.load(f)
+        none_thresholds = np.array(tdata["thresholds"])
+        polar_threshold = tdata.get("polar_threshold")
+        use_design_rule = tdata.get("design_rule", False)
+        print(f"  Thresholds 로드: {threshold_path.name}")
+        print(f"    polar_threshold={polar_threshold}, design_rule={use_design_rule}")
+
+    # (3) Design Rule Config — 운영 번들에서 가져오기
+    drule_path = BUNDLE_PATH / "design_rule_config.json"
+    if drule_path.exists():
+        with open(drule_path, "r", encoding="utf-8") as f:
+            drule_data = json.load(f)
+        if "design_rule_config" in drule_data:
+            cfg.DESIGN_RULE_CONFIG = drule_data["design_rule_config"]
+            print("  Design Rule Config: 운영 번들에서 로드")
+        # keyword_gate_config: 번들(substring 기반) 대신 s1_config.py(정규식 기반) 사용
+        # Stage 4C에서 정규식으로 전환했으므로 번들 로드 스킵
+        if "keyword_gate_config" in drule_data:
+            print("  Keyword Gate Config: s1_config.py 정규식 Gate 유지 (번들 스킵)")
+        if "keyword_force_on_config" in drule_data:
+            cfg.KEYWORD_FORCE_ON_CONFIG = drule_data["keyword_force_on_config"]
+            print("  Keyword Force-On Config: 운영 번들에서 로드")
+        if "qc_postprocess_config" in drule_data:
+            cfg.QC_POSTPROCESS_CONFIG = drule_data["qc_postprocess_config"]
+            print("  QC Postprocess Config: 운영 번들에서 로드")
+
+    print("=== 체크포인트 로드 완료 ===\n")
+
+    return ABSAInference(
+        model=model,
+        tokenizer=tokenizer,
+        batch_size=batch_size,
+        none_thresholds=none_thresholds,
+        polar_threshold=polar_threshold,
+        use_design_rule=use_design_rule,
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="ABSA 전체 리뷰 추론")
+    parser.add_argument(
+        "--model-dir", type=str, default=None,
+        help="체크포인트 디렉토리 (07_models/ 하위). 미지정 시 운영 번들 사용",
+    )
+    parser.add_argument(
+        "--tag", type=str, default="stage3a_v4",
+        help="출력 파일 태그 (기본: stage3a_v4)",
+    )
+    return parser.parse_args()
+
+
 def main():
-    print("=" * 70)
-    print("FULL INFERENCE — Stage 3A 운영 번들")
-    print("=" * 70)
+    args = parse_args()
+
+    # 출력 경로 결정
+    output_path = PROJECT_ROOT / "01_outputs" / "inference" / f"absa_results_{args.tag}_full.csv"
+    summary_path = PROJECT_ROOT / "01_outputs" / "inference" / f"absa_results_{args.tag}_summary.json"
+
+    # 모델 로드
+    if args.model_dir:
+        model_dir = PROJECT_ROOT / "07_models" / args.model_dir
+        if not model_dir.exists():
+            model_dir = Path(args.model_dir)  # 절대 경로 fallback
+        print("=" * 70)
+        print(f"FULL INFERENCE — {model_dir.name}")
+        print("=" * 70)
+        inference = _load_from_checkpoint_dir(model_dir)
+    else:
+        print("=" * 70)
+        print("FULL INFERENCE — Stage 3A 운영 번들")
+        print("=" * 70)
+        inference = ABSAInference.from_bundle(str(BUNDLE_PATH))
 
     # 총 행 수 사전 확인
     total_lines = sum(1 for _ in open(REVIEWS_PATH)) - 1
     print(f"입력: {REVIEWS_PATH}")
     print(f"총 리뷰: {total_lines:,}건")
-    print(f"출력: {OUTPUT_PATH}")
+    print(f"출력: {output_path}")
     print(f"청크 크기: {CHUNK_SIZE:,}\n")
 
-    # 번들 로드
-    inference = ABSAInference.from_bundle(str(BUNDLE_PATH))
-
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     total_rows = 0
     total_ambiguous = 0
@@ -64,7 +165,7 @@ def main():
 
         # CSV append
         chunk_result.to_csv(
-            OUTPUT_PATH,
+            output_path,
             mode="a" if header_written else "w",
             header=not header_written,
             index=False,
@@ -143,7 +244,7 @@ def main():
         "speed_rev_per_sec": round(total_rows / elapsed_total, 1),
         "ambiguous_count": int(total_ambiguous),
         "ambiguous_pct": round(total_ambiguous / total_rows * 100, 2),
-        "bundle": "prod_bundle_stage3a_v1_20260225",
+        "bundle": args.tag,
         "aspect_mention_rate": {
             a: round(aspect_counts[a]["mentioned"] / total_rows * 100, 2) for a in aspects
         },
@@ -157,10 +258,10 @@ def main():
         "unclassified_rate": round(mc / total_rows * 100, 2),
         "review_sentiment_dist": {k: v for k, v in sent_counts.items()},
     }
-    with open(SUMMARY_PATH, "w", encoding="utf-8") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    print(f"\n요약 저장: {SUMMARY_PATH}")
-    print(f"결과 저장: {OUTPUT_PATH}")
+    print(f"\n요약 저장: {summary_path}")
+    print(f"결과 저장: {output_path}")
 
 
 if __name__ == "__main__":

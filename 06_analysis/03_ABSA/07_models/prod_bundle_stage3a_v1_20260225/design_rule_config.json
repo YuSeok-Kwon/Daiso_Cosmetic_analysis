@@ -1,7 +1,7 @@
 {
-  "_description": "Stage 3A Design Rule Override — 디자인 aspect를 모델 예측 대신 키워드 규칙으로 판단",
-  "_source": "05_src/s1_config.py (DESIGN_RULE_CONFIG + KEYWORD_GATE_CONFIG)",
-  "_version": "stage3a_v1_20260225",
+  "_description": "Stage 3A-v3 Design Rule Override + QC 후처리 규칙",
+  "_source": "05_src/s1_config.py (DESIGN_RULE_CONFIG + KEYWORD_GATE_CONFIG + QC_POSTPROCESS_CONFIG)",
+  "_version": "stage3a_v3_20260225",
 
   "design_rule_config": {
     "positive_keywords": [
@@ -33,7 +33,8 @@
     ],
     "재질/냄새": [
       "향", "냄새", "무향", "알코올", "역함", "역겨",
-      "향기", "방향", "자극", "쏘", "독함", "불쾌", "악취", "에탄올"
+      "향기", "방향", "자극", "쏘는", "독함", "불쾌", "악취", "에탄올",
+      "따끔", "시리", "저릿"
     ],
     "용량/휴대": [
       "양", "용량", "사이즈", "작다", "크다", "작아", "작은",
@@ -46,6 +47,72 @@
     "재구매": {
       "keywords": ["재구매"],
       "sentiment": 1
+    },
+    "가격/가성비": {
+      "keywords": [
+        "가성비", "저렴", "가격", "싸다", "싸고", "싸서", "싼", "저가",
+        "돈값", "가격대비", "최저가", "천원", "원짜리", "값", "가격대",
+        "싸게", "만원", "혜자", "쏠쏠", "착하"
+      ],
+      "sentiment": 1,
+      "negative_keywords": ["비싸", "비싼", "비쌌"],
+      "negative_sentiment": 3
+    }
+  },
+
+  "qc_postprocess_config": {
+    "rescue_delivery": {
+      "enabled": true,
+      "priority": "P0",
+      "keywords": ["배송", "택배", "도착", "발송", "출고", "수령", "배달"],
+      "target_aspect": "배송/포장",
+      "positive_keywords": ["빠르", "빨리", "빨랐", "좋았", "만족", "무난", "꼼꼼", "안전"],
+      "negative_keywords": ["느리", "늦", "별로", "안 ?좋", "불만", "최악", "엉망", "안옴", "안 옴"],
+      "default_sentiment": "neutral"
+    },
+    "auxiliary_delivery": {
+      "enabled": true,
+      "priority": "P1",
+      "positive_pattern": "(배송|택배)(도|이|은|가)?\\s*(빠르|빨리|빨랐|좋|괜찮|만족|무난|빠른)",
+      "negative_pattern": "(배송|택배)(도|이|은|가)?\\s*(느리|늦|늦었|별로|안 ?좋|불만|최악|엉망)",
+      "target_aspect": "배송/포장"
+    },
+    "hallucination_gate": {
+      "enabled": true,
+      "priority": "P1",
+      "gate_aspects": {
+        "배송/포장": ["배송", "택배", "도착", "발송", "출고", "배달", "수령", "포장"],
+        "색상/발색": ["발색", "컬러", "색감", "색상", "색", "립", "틴트", "섀도", "아이섀도", "블러셔"]
+      }
+    },
+    "ambiguous_enhancement": {
+      "enabled": true,
+      "priority": "P1",
+      "contrast_markers": ["지만", "는데", "으나", "그러나", "하지만", "근데"]
+    },
+    "secondary_rescue": {
+      "enabled": false,
+      "priority": "P2",
+      "aspect_keywords": {
+        "사용감/성능": ["발림", "흡수", "촉촉", "건조", "지속력", "커버력", "밀착"],
+        "재질/냄새": ["향", "냄새", "무향", "텍스처", "질감"],
+        "용량/휴대": ["양", "용량", "휴대", "사이즈", "미니"]
+      },
+      "negative_keywords": {
+        "사용감/성능": ["건조", "뜨", "따갑", "자극"],
+        "재질/냄새": ["역하", "역겨", "독하", "불쾌", "악취"],
+        "용량/휴대": ["적", "부족", "모자", "작아", "작다"]
+      },
+      "validation": {
+        "재질/냄새": {"mode": "keyword_gate"},
+        "용량/휴대": {"mode": "keyword_gate"},
+        "사용감/성능": {"mode": "p_none", "p_none_max": 0.50, "fallback": "keyword_gate"}
+      }
+    },
+    "contrast_correction": {
+      "enabled": false,
+      "priority": "P2",
+      "contrast_markers": ["지만", "는데", "근데", "그러나", "하지만"]
     }
   },
 

@@ -16,10 +16,10 @@ import pandas as pd
 from RQ_absa.s1_config import PROCESSED_DATA_DIR
 
 # Why-pi 프로젝트 루트의 reviews_text.csv
-REVIEWS_TEXT_PATH = ABSA_ROOT.parent.parent / "02_processed_data" / "csv" / "final" / "reviews_text.csv"
+REVIEWS_TEXT_PATH = ABSA_ROOT.parent.parent / "02_outputs" / "data" / "csv" / "final" / "reviews_text.csv"
 
 # 기존 학습 데이터 (중복 제거용)
-EXISTING_TRAIN_PATH = PROCESSED_DATA_DIR / "final" / "absa" / "absa_wide_train.csv"
+EXISTING_TRAIN_PATH = PROCESSED_DATA_DIR / "training" / "absa_wide_train.csv"
 
 # Aspect별 키워드 & 상한
 ASPECT_CONFIGS = {
@@ -72,7 +72,7 @@ def main():
     print(f"  기존 학습 데이터 제외 후: {len(new_reviews):,}행")
 
     # ── Aspect별 추출 ──
-    output_dir = PROCESSED_DATA_DIR / "final" / "weak_aspect_candidates"
+    output_dir = PROCESSED_DATA_DIR / "weak_aspect_candidates"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     total_extracted = 0
