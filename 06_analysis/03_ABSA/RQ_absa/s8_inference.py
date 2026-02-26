@@ -11,6 +11,7 @@ Inference pipeline for ABSA model (Option A: aspect별 4-class 통합)
     ]
 }
 """
+import re
 import json
 import hashlib
 import torch

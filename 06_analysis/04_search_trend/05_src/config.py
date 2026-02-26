@@ -5,7 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # ── 경로 ────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # Why-pi/
+PROJECT_ROOT = Path(__file__).resolve().parents[3]  # Why-pi/
 CONFIG_DIR = PROJECT_ROOT / "config"
 FINAL_DIR = PROJECT_ROOT / "02_processed_data" / "csv" / "final"
 

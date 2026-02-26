@@ -19,16 +19,15 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = PROJECT_ROOT.parent.parent / "02_outputs" / "data" / "csv" / "final"
+REPO_ROOT = PROJECT_ROOT.parent.parent
+DATA_ROOT = REPO_ROOT / "02_outputs" / "00_data" / "csv" / "final"
 
 # 입력
-BUNDLE_DIR = PROJECT_ROOT / "07_models" / "prod_bundle_stage3a_v1_20260225"
-INFERENCE_CSV = PROJECT_ROOT / "01_outputs" / "inference" / "absa_results_stage3a_v3_full.csv"
-SUMMARY_JSON = PROJECT_ROOT / "01_outputs" / "inference" / "absa_results_stage3a_v3_summary.json"
+INFERENCE_CSV = REPO_ROOT / "02_outputs" / "ABSA" / "inference" / "absa_results_stage4b_rgx_full.csv"
 
 # 출력: 버전 폴더
-VERSION = "stage3a_v3_20260225"
-SNAPSHOT_DIR = PROJECT_ROOT / "01_outputs" / "snapshot" / VERSION
+VERSION = "stage4b_rgx_20260227"
+SNAPSHOT_DIR = REPO_ROOT / "02_outputs" / "ABSA" / f"snapshot_{VERSION}"
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -182,23 +181,20 @@ def main():
     print("=" * 70)
 
     # 1) 원본 파일 체크섬
-    print("\n[1/5] 원본 체크섬 계산...")
+    print("\n[1/4] 원본 체크섬 계산...")
     checksums = {
         "inference_csv": md5(INFERENCE_CSV),
-        "summary_json": md5(SUMMARY_JSON),
-        "bundle_manifest": md5(BUNDLE_DIR / "MANIFEST.json"),
     }
     for k, v in checksums.items():
         print(f"  {k}: {v}")
 
     # 2) 원본 복사
-    print("\n[2/5] 원본 → 스냅샷 폴더 복사...")
+    print("\n[2/4] 원본 → 스냅샷 폴더 복사...")
     shutil.copy2(INFERENCE_CSV, SNAPSHOT_DIR / "absa_results_full.csv")
-    shutil.copy2(SUMMARY_JSON, SNAPSHOT_DIR / "summary.json")
     print(f"  → {SNAPSHOT_DIR}")
 
     # 3) 테이블 분리
-    print("\n[3/5] Review-level + Aspect-level Long 분리...")
+    print("\n[3/4] Review-level + Aspect-level Long 분리...")
     df = pd.read_csv(INFERENCE_CSV)
     review_level, aspect_long = build_review_and_aspect_tables(df)
 
@@ -215,7 +211,7 @@ def main():
     print(f"  review_level 컬럼: {list(review_level.columns)}")
 
     # 4) 상품별 KPI
-    print("\n[4/5] 상품별 KPI 집계...")
+    print("\n[4/4] 상품별 KPI 집계...")
     kpi = build_product_kpi(review_level, aspect_long)
     kpi_path = SNAPSHOT_DIR / "product_kpi.csv"
     kpi.to_csv(kpi_path, index=False, encoding="utf-8-sig")
@@ -232,18 +228,16 @@ def main():
               f"재구매={row['repurchase_mention_rate']:.1%}")
 
     # 5) SNAPSHOT.json
-    print("\n[5/5] SNAPSHOT.json 생성...")
+    print("\nSNAPSHOT.json 생성...")
     snapshot = {
         "version": VERSION,
-        "bundle": str(BUNDLE_DIR.name),
-        "created_at": "2026-02-25",
+        "created_at": "2026-02-27",
         "source_checksums": checksums,
         "output_checksums": {
             "review_level_csv": md5(review_path),
             "aspect_long_csv": md5(aspect_path),
             "product_kpi_csv": md5(kpi_path),
             "absa_results_full_csv": md5(SNAPSHOT_DIR / "absa_results_full.csv"),
-            "summary_json": md5(SNAPSHOT_DIR / "summary.json"),
         },
         "stats": {
             "total_reviews": len(review_level),
@@ -255,7 +249,6 @@ def main():
         },
         "files": {
             "absa_results_full.csv": "원본 추론 결과 (JSON 컬럼 포함)",
-            "summary.json": "전체 통계 요약",
             "review_level.csv": "리뷰 단위 테이블 (메타 조인 완료, JSON 제거)",
             "aspect_long.csv": "Aspect-level Long 테이블 (aspect별 1행)",
             "product_kpi.csv": "상품별 KPI 집계 (8대 지표)",
