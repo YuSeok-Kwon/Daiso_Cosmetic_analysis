@@ -38,7 +38,7 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT / "05_src"))
 sys.path.insert(0, str(PIPELINE_DIR))
 
-from transformer import CrawlerToERDTransformer, load_existing_final, TABLE_ORDER
+from transformer import CrawlerToERDTransformer, load_existing_final, load_existing_from_bq, TABLE_ORDER
 from storage import LocalStorage
 
 
@@ -135,9 +135,26 @@ def run_crawling(config: dict, force_full: bool = False) -> tuple:
         history_file = crawl_cfg.get("history_file", "cache/crawl_history.json")
         history_path = str(PROJECT_ROOT / history_file)
 
-        # bootstrapping: reviews_core.csv에서 이력 초기화
-        reviews_core_path = str(PROJECT_ROOT / "02_processed_data" / "csv" / "final" / "reviews_core.csv")
-        history = CrawlHistory.from_existing_csv(history_path, reviews_core_path)
+        # bootstrapping: 이력 파일이 없으면 BQ → 로컬 CSV 순으로 폴백
+        history = CrawlHistory(history_path)
+        if history.product_count == 0:
+            try:
+                sys.path.insert(0, str(PROJECT_ROOT / "05_src" / "02_bigquery"))
+                from bq_client import query_to_df
+                bq_dataset = config.get("pipeline", {}).get("storage", {}).get("bigquery", {}).get("dataset", "daiso")
+                bq_reviews = query_to_df(
+                    f"SELECT CAST(product_code AS STRING) AS product_code, "
+                    f"MAX(CAST(review_date AS STRING)) AS max_date "
+                    f"FROM `{bq_dataset}.reviews_core` GROUP BY product_code"
+                )
+                for _, row in bq_reviews.iterrows():
+                    history.update_product(row["product_code"], review_date=row["max_date"])
+                history.save()
+                print(f"  크롤링 이력 BQ 부트스트래핑: {len(bq_reviews)}개 제품")
+            except Exception:
+                # BQ 실패 시 로컬 CSV 폴백
+                reviews_core_path = str(PROJECT_ROOT / "02_processed_data" / "csv" / "final" / "reviews_core.csv")
+                history = CrawlHistory.from_existing_csv(history_path, reviews_core_path)
 
         print(f"  크롤링 모드: 증분 (이력: {history.product_count}개 제품)")
     else:
@@ -168,8 +185,17 @@ def run_transform(
     reviews_csv: str,
     ingredients_csv: str,
     final_dir: str,
+    use_bq: bool = False,
+    bq_dataset: str = "daiso",
 ) -> dict:
-    """변환 실행 → 13개 테이블 dict 반환"""
+    """변환 실행 → 13개 테이블 dict 반환
+
+    Parameters
+    ----------
+    use_bq : bool
+        True면 BQ에서 기존 데이터를 조회하여 ID 유지.
+        False면 기존 로컬 final/ CSV에서 로드 (레거시).
+    """
     print("\n[변환] raw CSV 로드 중...")
 
     products_df = pd.read_csv(products_csv) if products_csv else pd.DataFrame()
@@ -178,17 +204,25 @@ def run_transform(
 
     print(f"  products: {len(products_df)}행, reviews: {len(reviews_df)}행, ingredients: {len(ingredients_df)}행")
 
-    # 기존 final/ CSV 로드 (ID 유지용)
-    existing_data = load_existing_final(final_dir)
-    if existing_data:
-        print(f"  기존 데이터 로드: {list(existing_data.keys())}")
+    # 기존 데이터 로드 (ID 유지용) — BQ 또는 로컬
+    if use_bq:
+        print(f"  기존 데이터 소스: BigQuery ({bq_dataset})")
+        existing_data = load_existing_from_bq(dataset=bq_dataset)
+    else:
+        existing_data = load_existing_final(final_dir)
+        if existing_data:
+            print(f"  기존 데이터 로드 (로컬): {list(existing_data.keys())}")
 
-    # 프로모션 로드
-    promo_path = Path(final_dir) / "promotions.csv"
-    promotions_df = None
-    if promo_path.exists():
-        promotions_df = pd.read_csv(promo_path, parse_dates=["start_date", "end_date"])
-        print(f"  프로모션 로드: {len(promotions_df)}건")
+    # 프로모션 로드 — BQ → 로컬 CSV → 빈 DataFrame 순으로 폴백
+    promotions_df = existing_data.get("promotions", None)
+    if promotions_df is None or promotions_df.empty:
+        promo_path = Path(final_dir) / "promotions.csv"
+        if promo_path.exists():
+            promotions_df = pd.read_csv(promo_path, parse_dates=["start_date", "end_date"])
+            print(f"  프로모션 로드 (로컬): {len(promotions_df)}건")
+        else:
+            promotions_df = None
+            print("  프로모션: BQ/로컬 모두 없음 → 프로모션 매칭 건너뜀")
 
     # 변환 실행
     print("\n[변환] ERD 13개 테이블 변환 중...")
@@ -293,25 +327,34 @@ def main():
         print("오류: 입력 CSV가 없습니다. --products, --reviews, --ingredients 옵션을 확인하세요.")
         sys.exit(1)
 
+    # BQ 설정 확인
+    bq_cfg = config.get("pipeline", {}).get("storage", {}).get("bigquery", {})
+    bq_enabled = bq_cfg.get("enabled", False) and not args.local_only
+    bq_dataset = bq_cfg.get("dataset", "daiso")
+    local_cfg = config.get("pipeline", {}).get("storage", {}).get("local", {})
+    local_enabled = local_cfg.get("csv", False) or local_cfg.get("parquet", False)
+
     # Step 2: 변환
     print("\n[Step 2] 변환 실행...")
-    tables = run_transform(products_csv, reviews_csv, ingredients_csv, final_dir)
+    tables = run_transform(
+        products_csv, reviews_csv, ingredients_csv, final_dir,
+        use_bq=(bq_enabled or args.upload_bq),
+        bq_dataset=bq_dataset,
+    )
 
-    # Step 3: 로컬 저장
-    print("\n[Step 3] 로컬 저장...")
-    run_save(tables, config)
+    # Step 3: 로컬 저장 (설정에 따라)
+    if local_enabled or args.local_only:
+        print("\n[Step 3] 로컬 저장...")
+        run_save(tables, config)
+    else:
+        print("\n[Step 3] 로컬 저장 건너뜀 (BQ 전용 모드)")
 
-    # Step 4: BigQuery 업로드 (선택)
-    if args.upload_bq and not args.local_only:
-        print("\n[Step 4] BigQuery 업로드...")
+    # Step 4: BigQuery UPSERT
+    if args.upload_bq or bq_enabled:
+        print("\n[Step 4] BigQuery UPSERT...")
         run_upload_bq(tables, config)
-    elif not args.local_only:
-        bq_enabled = config.get("pipeline", {}).get("storage", {}).get("bigquery", {}).get("enabled", False)
-        if bq_enabled:
-            print("\n[Step 4] BigQuery 업로드 (config 설정)...")
-            run_upload_bq(tables, config)
-        else:
-            print("\n[Step 4] BigQuery 업로드 건너뜀 (--upload-bq 미지정)")
+    else:
+        print("\n[Step 4] BigQuery 업로드 건너뜀")
 
     elapsed = (datetime.now() - start_time).total_seconds()
     print(f"\n{'=' * 60}")

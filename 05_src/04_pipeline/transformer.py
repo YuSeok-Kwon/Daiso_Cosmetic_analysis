@@ -36,7 +36,7 @@ except ImportError:
 
 # ERD 테이블 순서 (FK 의존성 반영)
 TABLE_ORDER = [
-    "brand",
+    "brands",
     "manufacturer",
     "ingredients_dic",
     "promotions",
@@ -73,7 +73,7 @@ class CrawlerToERDTransformer:
         ingredients_df : 크롤러 ingredients raw
             (product_id, ingredient)
         existing_data : 기존 final/ CSV 데이터 (ID 유지용)
-            {"brand": df, "users_profile": df, ...}
+            {"brands": df, "users_profile": df, ...}
         promotions_df : promotions.csv (수동 관리)
         """
         self.products_raw = products_df.copy()
@@ -102,11 +102,11 @@ class CrawlerToERDTransformer:
 
         return self.tables
 
-    # ── 1. brand ────────────────────────────────────────────────
+    # ── 1. brands ────────────────────────────────────────────────
 
     def _transform_brand(self):
         """products_raw의 unique brand → brand_id 할당"""
-        existing_brand = self.existing.get("brand", pd.DataFrame())
+        existing_brand = self.existing.get("brands", pd.DataFrame())
 
         # 기존 brand 매핑
         if not existing_brand.empty and "brand_id" in existing_brand.columns:
@@ -119,7 +119,7 @@ class CrawlerToERDTransformer:
         # 크롤러에서 새 브랜드 추출
         col = "brand" if "brand" in self.products_raw.columns else None
         if col is None:
-            self.tables["brand"] = existing_brand if not existing_brand.empty else pd.DataFrame(columns=["brand_id", "name"])
+            self.tables["brands"] = existing_brand if not existing_brand.empty else pd.DataFrame(columns=["brand_id", "name"])
             return
 
         raw_brands = self.products_raw[col].dropna().unique()
@@ -131,7 +131,7 @@ class CrawlerToERDTransformer:
         # brand_map → DataFrame
         df = pd.DataFrame(list(brand_map.items()), columns=["name", "brand_id"])
         df = df[["brand_id", "name"]].sort_values("brand_id").reset_index(drop=True)
-        self.tables["brand"] = df
+        self.tables["brands"] = df
 
         # products_raw에 brand_id 매핑 (이후 사용)
         self.products_raw["brand_id"] = self.products_raw[col].map(brand_map)
@@ -319,15 +319,20 @@ class CrawlerToERDTransformer:
             df["user_id"] = range(1, len(df) + 1)
         else:
             # 기존 매핑 테이블 로드 (user_masked → user_id 영속 매핑)
-            map_path = Path(self.final_dir) / "user_id_map.csv" if hasattr(self, 'final_dir') else None
-            if map_path is None:
-                # final_dir가 없으면 기본 경로 시도
-                map_path = Path(__file__).resolve().parent.parent.parent / "02_processed_data" / "csv" / "final" / "user_id_map.csv"
-
+            # 1) existing_data에 user_id_map이 있으면 사용 (BQ 모드)
+            existing_map_df = self.existing.get("user_id_map", pd.DataFrame())
             existing_map = {}
-            if map_path.exists():
-                map_df = pd.read_csv(map_path)
-                existing_map = dict(zip(map_df["user_masked"], map_df["user_id"]))
+
+            if not existing_map_df.empty and "user_masked" in existing_map_df.columns:
+                existing_map = dict(zip(existing_map_df["user_masked"], existing_map_df["user_id"]))
+            else:
+                # 2) 로컬 CSV 폴백
+                map_path = Path(self.final_dir) / "user_id_map.csv" if hasattr(self, 'final_dir') else None
+                if map_path is None:
+                    map_path = Path(__file__).resolve().parent.parent.parent / "02_processed_data" / "csv" / "final" / "user_id_map.csv"
+                if map_path.exists():
+                    map_df = pd.read_csv(map_path)
+                    existing_map = dict(zip(map_df["user_masked"], map_df["user_id"]))
 
             # 기존 최대 user_id 결정
             max_uid = 0
@@ -352,12 +357,16 @@ class CrawlerToERDTransformer:
 
             df["user_id"] = df[user_col].map(user_map)
 
-            # 매핑 테이블 업데이트 저장
+            # 매핑 테이블 업데이트 — tables에 포함하여 BQ UPSERT 대상으로 전달
             updated_map = pd.DataFrame(
                 [(k, v) for k, v in user_map.items()],
                 columns=["user_masked", "user_id"]
             ).sort_values("user_id").reset_index(drop=True)
-            updated_map.to_csv(map_path, index=False)
+            self.tables["user_id_map"] = updated_map
+
+            # 로컬 CSV 백업 (폴백용)
+            if map_path and map_path.parent.exists():
+                updated_map.to_csv(map_path, index=False)
             if new_count > 0:
                 print(f"  user_id_map 업데이트: 기존 {len(existing_map)}명 + 신규 {new_count}명 = {len(user_map)}명")
 
@@ -498,7 +507,7 @@ class CrawlerToERDTransformer:
 
 
 def load_existing_final(final_dir: str) -> Dict[str, pd.DataFrame]:
-    """기존 02_processed_data/csv/final/ 디렉토리에서 CSV 로드"""
+    """기존 02_processed_data/csv/final/ 디렉토리에서 CSV 로드 (레거시)"""
     final_path = Path(final_dir)
     data = {}
 
@@ -510,5 +519,129 @@ def load_existing_final(final_dir: str) -> Dict[str, pd.DataFrame]:
                 data[table_name] = df
             except Exception:
                 pass
+
+    return data
+
+
+def load_existing_from_bq(dataset: str = "daiso") -> Dict[str, pd.DataFrame]:
+    """BigQuery에서 ID 매핑에 필요한 기존 데이터 조회
+
+    transformer가 신규 데이터만 변환할 때, 기존 ID 체계를 유지하기 위해
+    BQ에서 최소한의 매핑 데이터만 조회한다.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        TABLE_ORDER의 각 테이블에 대해 ID 매핑용 DataFrame 반환.
+        추가 키: "user_id_map", "max_review_id"
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    try:
+        from bigquery.bq_client import query_to_df
+    except ImportError:
+        from bq_client import query_to_df
+
+    data = {}
+
+    # brands: name → brand_id 매핑
+    try:
+        data["brands"] = query_to_df(
+            f"SELECT brand_id, name FROM `{dataset}.brands`"
+        )
+    except Exception:
+        data["brands"] = pd.DataFrame(columns=["brand_id", "name"])
+
+    # manufacturer: 전체 조회 (행 수 적음)
+    try:
+        data["manufacturer"] = query_to_df(
+            f"SELECT manufacturer_id, ENTP_NAME FROM `{dataset}.manufacturer`"
+        )
+    except Exception:
+        data["manufacturer"] = pd.DataFrame(columns=["manufacturer_id", "ENTP_NAME"])
+
+    # ingredients_dic: ingredient_name → ingredient_id 매핑
+    try:
+        data["ingredients_dic"] = query_to_df(
+            f"SELECT ingredient_id, ingredient_name, application_role, ingredient_type "
+            f"FROM `{dataset}.ingredients_dic`"
+        )
+    except Exception:
+        data["ingredients_dic"] = pd.DataFrame(
+            columns=["ingredient_id", "ingredient_name", "application_role", "ingredient_type"]
+        )
+
+    # promotions: 전체 조회 (행 수 적음)
+    try:
+        data["promotions"] = query_to_df(
+            f"SELECT * FROM `{dataset}.promotions`"
+        )
+    except Exception:
+        data["promotions"] = pd.DataFrame(
+            columns=["promotion_id", "description", "brand_id", "event_type", "start_date", "end_date"]
+        )
+
+    # products_core: product_code → manufacturer_id 매핑
+    try:
+        data["products_core"] = query_to_df(
+            f"SELECT product_code, manufacturer_id, brand_id FROM `{dataset}.products_core`"
+        )
+    except Exception:
+        data["products_core"] = pd.DataFrame(columns=["product_code", "manufacturer_id", "brand_id"])
+
+    # products_stats: 기존 likes, shares 보존용
+    try:
+        data["products_stats"] = query_to_df(
+            f"SELECT product_code, likes, shares FROM `{dataset}.products_stats`"
+        )
+    except Exception:
+        data["products_stats"] = pd.DataFrame(columns=["product_code", "likes", "shares"])
+
+    # functional: 전체 조회 (MFDS API 결과, 크롤러에서 생성 불가)
+    try:
+        data["functional"] = query_to_df(
+            f"SELECT * FROM `{dataset}.functional`"
+        )
+    except Exception:
+        data["functional"] = pd.DataFrame(
+            columns=["product_code", "ITEM_PH", "ph_category",
+                     "is_whitening", "is_wrinkle_reduction", "is_sunscreen", "is_acne"]
+        )
+
+    # users_profile: user_id 매핑 참조용
+    try:
+        data["users_profile"] = query_to_df(
+            f"SELECT user_id FROM `{dataset}.users_profile`"
+        )
+    except Exception:
+        data["users_profile"] = pd.DataFrame(columns=["user_id"])
+
+    # reviews_core: max review_id + user_id 참조용
+    try:
+        data["reviews_core"] = query_to_df(
+            f"SELECT review_id, user_id FROM `{dataset}.reviews_core`"
+        )
+    except Exception:
+        data["reviews_core"] = pd.DataFrame(columns=["review_id", "user_id"])
+
+    # user_id_map: user_masked → user_id 영속 매핑 (BQ에 없으면 로컬 폴백)
+    try:
+        data["user_id_map"] = query_to_df(
+            f"SELECT user_masked, user_id FROM `{dataset}.user_id_map`"
+        )
+    except Exception:
+        # BQ에 user_id_map 테이블이 없으면 로컬 CSV 폴백
+        map_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "02_processed_data" / "csv" / "final" / "user_id_map.csv"
+        )
+        if map_path.exists():
+            data["user_id_map"] = pd.read_csv(map_path)
+        else:
+            data["user_id_map"] = pd.DataFrame(columns=["user_masked", "user_id"])
+
+    print(f"[BQ] 기존 데이터 로드 완료:")
+    for key, df in data.items():
+        if not df.empty:
+            print(f"  {key}: {len(df):,}행")
 
     return data

@@ -379,10 +379,10 @@ def load_crawler_data(
 
 # FK 의존성 반영 업로드 순서
 UPLOAD_ORDER = [
-    "brand", "manufacturer", "ingredients_dic", "promotions",
+    "brands", "manufacturer", "ingredients_dic", "promotions",
     "products_core", "products_category", "products_stats",
     "products_ingredients", "functional",
-    "users_profile", "users_repurchase",
+    "user_id_map", "users_profile", "users_repurchase",
     "reviews_core", "reviews_text",
 ]
 
@@ -437,7 +437,7 @@ class CrawlerETLv2:
 
     def get_brands_map(self) -> Dict[str, int]:
         """브랜드명 → brand_id"""
-        df = query_to_df(f"SELECT brand_id, name FROM {self.dataset}.brand")
+        df = query_to_df(f"SELECT brand_id, name FROM {self.dataset}.brands")
         return dict(zip(df["name"], df["brand_id"]))
 
     def get_ingredients_map(self) -> Dict[str, int]:

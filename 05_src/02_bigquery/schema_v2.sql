@@ -1,8 +1,8 @@
 -- ERD v2 BigQuery DDL
 -- 13개 테이블 (FK 의존성 순서)
 
--- 1. brand
-CREATE TABLE IF NOT EXISTS `daiso.brand` (
+-- 1. brands
+CREATE TABLE IF NOT EXISTS `daiso.brands` (
   brand_id INT64 NOT NULL,
   name STRING
 );

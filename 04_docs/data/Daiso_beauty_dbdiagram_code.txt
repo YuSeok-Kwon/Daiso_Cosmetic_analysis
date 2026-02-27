@@ -1,56 +1,34 @@
+// 다이소 뷰티 프로젝트 최종 데이터 모델 (v3)
 // All ID and count fields are non-negative integers.
 // VARCHAR(n) lengths reflect expected maximum values with buffer.
 
 // =======================
-// Reviews domain
+// 1. 리뷰 데이터 그룹
 // =======================
 Table Reviews_core {
   review_id int [primary key]
-  user_id int [not null]
   product_code int [not null]
-  promotion_id int
+  user_id int [not null]
   rating smallint [not null]
-  image_count smallint [not null]
   review_date date [not null]
+  image_count smallint [not null]
   is_reorder boolean [not null]
+  promotion_id int // NULL=미매칭
 }
 
 Table Reviews_text {
   review_id int [primary key] // PK/FK (1:1 with Reviews_core)
   text text
-  review_length smallint [not null]
+  review_length int [not null]
 }
 
 // =======================
-// Users domain
-// =======================
-Table User_id_map {
-  user_masked varchar(30) [primary key] // 마스킹된 유저 닉네임
-  user_id int [not null, unique]
-}
-
-Table Users_profile {
-  user_id int [primary key]
-  user_total_reviews int [not null]
-  user_activity_level varchar(20) [not null]
-  user_rating_tendency varchar(30) [not null]
-  review_tenure int [not null]
-}
-
-Table Users_repurchase {
-  user_id int [not null]
-  reorder_user_category int [not null]
-  reorder_user_brand int [not null]
-  reorder_user_avg_rating float [not null]
-}
-
-// =======================
-// Products domain
+// 2. 상품 데이터 그룹
 // =======================
 Table Products_core {
   product_code int [primary key]
-  manufacturer_id smallint [not null]
-  brand_id smallint [not null]
+  manufacturer_id int [not null]
+  brand_id int [not null]
   name varchar(80) [not null]
   price int [not null]
   country varchar(20) [not null]
@@ -62,9 +40,9 @@ Table Products_stats {
   shares int [not null]
   review_count int [not null]
   first_review_date date // 첫 리뷰 작성일 (리뷰 없으면 NULL)
-  engagement_score float [not null]
-  cp_index float [not null]
-  review_density float [not null]
+  engagement_score float [not null] // 0.15×likes + 0.30×shares + 0.55×review_count
+  cp_index float [not null] // (engagement_score / price) × 1000
+  review_density float [not null] // review_count / (마지막리뷰일 - 첫리뷰일)
 }
 
 Table Products_category {
@@ -74,91 +52,179 @@ Table Products_category {
 }
 
 Table Functional {
-  product_code int [not null]
-  ITEM_pH float
-  pH_category varchar(15)
+  product_code int [primary key] // PK/FK (1:1 with Products_core)
+  ITEM_PH varchar(20) // 제품 pH 값 (식약처 보고 기준)
+  ph_category varchar(15) // pH 4단계 범주 (산성/약산성/중성/알칼리성)
   is_whitening boolean [not null]
   is_wrinkle_reduction boolean [not null]
   is_sunscreen boolean [not null]
   is_acne boolean [not null]
 }
 
-Table Brand {
-  brand_id smallint [primary key]
-  brand_name varchar(30) [not null]
-}
-
-Table Manufacturer {
-  manufacturer_id smallint [primary key]
-  ENTP_NAME varchar(40) [not null]
-}
-
 // =======================
-// Ingredients domain
+// 3. 성분 및 참조 그룹
 // =======================
 Table Ingredients_dic {
-  ingredient_id smallint [primary key]
+  ingredient_id int [primary key]
   ingredient_name varchar(60) [not null]
-  ingredient_type varchar(30) [not null]
-  effect varchar(30) [not null]
+  ingredient_type varchar(30) [not null] // 화학 계열 분류 (Polymer, Ester, Vitamin 등 33종)
   is_allergic boolean [not null]
+  effect varchar(30) [not null] // Moisturizing, Anti-aging, Brightening 등
 }
 
 Table products_ingredients {
   product_code int [not null]
-  ingredient_id smallint [not null]
+  ingredient_id int [not null]
 
   Indexes {
-    (product_code, ingredient_id) [unique]
+    (product_code, ingredient_id) [pk]
   }
 }
 
-// =======================
-// (Optional) Promotions domain (kept, but you can delete if not needed)
-// =======================
+Table Brands {
+  brand_id int [primary key]
+  name varchar(30) [not null]
+}
+
+Table Manufacturer {
+  manufacturer_id int [primary key]
+  ENTP_NAME varchar(40) [not null] // 제조사명 (식약처 등록 기준)
+}
+
 Table Promotions {
   promotion_id int [primary key]
   start_date date [not null]
   end_date date [not null]
   description varchar(100) [not null]
-  brand_id smallint
-  event_type varchar(30) [not null]
+  brand_id int // 대상 브랜드 ID (nullable)
+  event_type varchar(30) [not null] // 구매이벤트, 리뷰이벤트
+}
+
+// =======================
+// 4. 유저 및 분석 그룹
+// =======================
+Table User_id_map {
+  user_masked varchar(30) [primary key] // 마스킹된 유저 닉네임 (예: ths*****)
+  user_id int [not null, unique]
+}
+
+Table Users_profile {
+  user_id int [primary key]
+  user_total_reviews int [not null]
+  user_activity_level varchar(20) [not null] // Newbie, Junior, Regular, VIP
+  user_rating_tendency varchar(30) [not null] // Always Positive, Mostly Positive 등
+  review_tenure int [not null] // 리뷰 활동 기간 (일 단위)
+}
+
+Table Users_repurchase {
+  user_id int [primary key] // 재구매 이력 없는 유저는 제외
+  reorder_user_category int [not null]
+  reorder_user_brand int [not null]
+  reorder_user_avg_rating float [not null]
+}
+
+// =======================
+// 5. ABSA 감성 분석 그룹
+// =======================
+Table Review_absa {
+  review_id int [primary key] // PK/FK (1:1 with Reviews_core)
+  sentiment varchar(10) [not null] // positive/neutral/negative
+  sentiment_score float [not null] // 0.0~1.0
+  is_ambiguous boolean [not null]
+  aspect_count smallint [not null] // 검출된 Aspect 개수 (0~8)
+  absa_version varchar(20) [not null] // 예: stage3a_v2
+  inferred_at datetime [not null]
+}
+
+Table Review_aspects {
+  review_id int [not null]
+  aspect varchar(20) [not null] // 배송/포장, 가격/가성비, 사용감/성능 등 8종
+  aspect_sentiment varchar(10) [not null] // positive/neutral/negative
+  aspect_confidence float [not null] // 0.0~1.0
+
+  Indexes {
+    (review_id, aspect) [pk]
+  }
+}
+
+// =======================
+// 6. SLI 연착륙 분석 그룹
+// =======================
+Table Sli_results {
+  product_code int [primary key] // PK/FK (1:1 with Products_core)
+  is_soft_landing_dtw boolean [not null] // DTW 클러스터링 기반
+  is_soft_landing_surv boolean [not null] // Kaplan-Meier 생존분석 기반
+  is_soft_landing_rule boolean [not null] // SLI v2 가중점수 규칙 기반
+  is_soft_landing_ml boolean [not null] // LightGBM ML 분류기 기반
+  total_votes smallint [not null] // 4개 방법론 투표 수 (0~4)
+  final_soft_landing boolean [not null] // 최종 연착륙 판정 (과반수)
+  confidence float [not null] // 투표 일치도 (votes/4)
+  ml_prob float [not null] // ML 모델 연착륙 확률
+  sli_version varchar(20) [not null]
+  calculated_at datetime [not null]
+}
+
+Table Search_trends {
+  product_code int [not null]
+  period varchar(10) [not null] // 수집 기간 (예: 2024-01)
+  source varchar(10) [not null] // 검색 소스 (blog, shop 등)
+  trend_value float
+  search_volume int
+  blog_count int
+  shop_count int
+  collected_at datetime [not null]
+
+  Indexes {
+    (product_code, period, source) [pk]
+  }
+}
+
+// =======================
+// 7. 운영 그룹
+// =======================
+Table Pipeline_log {
+  run_id int [primary key]
+  run_date datetime [not null]
+  step_name varchar(30) [not null] // crawling, transform, absa, sli, search_trend, dashboard
+  status varchar(10) [not null] // success, fail
+  rows_affected int
+  duration_sec float
+  error_message varchar(500)
+  meta json
 }
 
 // =======================
 // References (relationships)
 // =======================
 
-// Reviews -> Products / Users
-Ref reviews_product: Reviews_core.product_code > Products_core.product_code // many-to-one
+// --- 리뷰 그룹 ---
+Ref reviews_product: Reviews_core.product_code > Products_core.product_code
 Ref reviews_user: Reviews_core.user_id > Users_profile.user_id
+Ref review_text: Reviews_text.review_id - Reviews_core.review_id
+Ref promotion_reviews: Reviews_core.promotion_id > Promotions.promotion_id
 
-// Reviews_text (1:1)
-Ref review_text: Reviews_text.review_id - Reviews_core.review_id // one-to-one
+// --- 유저 그룹 ---
+Ref user_map: User_id_map.user_id - Users_profile.user_id
+Ref user_repurchase: Users_repurchase.user_id - Users_profile.user_id
 
-// User_id_map -> Users_profile (1:1)
-Ref user_map: User_id_map.user_id - Users_profile.user_id // one-to-one
+// --- 상품 그룹 ---
+Ref product_brand: Products_core.brand_id > Brands.brand_id
+Ref product_manufacturer: Products_core.manufacturer_id > Manufacturer.manufacturer_id
+Ref product_stats: Products_stats.product_code - Products_core.product_code
+Ref product_category: Products_category.product_code - Products_core.product_code
+Ref product_functional: Functional.product_code - Products_core.product_code
 
-// Users_repurchase (1:1)
-Ref User_repurchase: Users_repurchase.user_id - Users_profile.user_id
+// --- 성분 (N:M) ---
+Ref pi_product: products_ingredients.product_code > Products_core.product_code
+Ref pi_ingredient: products_ingredients.ingredient_id > Ingredients_dic.ingredient_id
 
-// Products_core -> Brand / Manufacturer
-Ref product_brand: Products_core.brand_id > Brand.brand_id                 // many-to-one
-Ref product_manufacturer: Products_core.manufacturer_id > Manufacturer.manufacturer_id // many-to-one
+// --- 프로모션 ---
+Ref brand_promotions: Promotions.brand_id > Brands.brand_id
 
-// Product 1:1 extension tables
-Ref product_stats: Products_stats.product_code - Products_core.product_code       // one-to-one
-Ref product_category: Products_category.product_code - Products_core.product_code // one-to-one
-Ref product_functional: Functional.product_code > Products_core.product_code      // one-to-one
+// --- ABSA 감성 분석 ---
+Ref absa_review: Review_absa.review_id - Reviews_core.review_id
+Ref aspects_absa: Review_aspects.review_id > Review_absa.review_id
 
-// Ingredients bridge (many-to-many)
-Ref pi_product: products_ingredients.product_code > Products_core.product_code    // many-to-one
-Ref pi_ingredient: products_ingredients.ingredient_id > Ingredients_dic.ingredient_id // many-to-one
-
-// Brand (1) -> Promotions (0..N), Promotions.brand_id can be NULL
-Ref brand_promotions: Promotions.brand_id > Brand.brand_id // many-to-one (nullable FK on Promotions)
-
-// Promotions (1) -> Reviews_core (0..N), Reviews_core.promotion_id can be NULL
-Ref promotion_reviews: Reviews_core.promotion_id > Promotions.promotion_id // many-to-one (nullable FK on Reviews_core)
-
-
+// --- SLI 연착륙 ---
+Ref sli_product: Sli_results.product_code - Products_core.product_code
+Ref search_product: Search_trends.product_code > Products_core.product_code

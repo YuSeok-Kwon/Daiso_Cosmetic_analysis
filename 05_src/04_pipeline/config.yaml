@@ -31,9 +31,28 @@ pipeline:
 
   storage:
     local:
-      csv: true
-      parquet: true
+      csv: false             # 로컬 CSV 비활성화 (BQ 전환)
+      parquet: false          # 로컬 Parquet 비활성화
       base_dir: "02_processed_data"
     bigquery:
-      enabled: false        # BigQuery 업로드 (default: false)
+      enabled: true           # BigQuery 활성화
       dataset: "daiso"
+
+  absa:
+    enabled: true
+    bundle_path: "06_analysis/03_ABSA/07_models/prod_bundle_stage3a_v1_20260225"
+    version: "stage3a_v2"
+
+  sli:
+    enabled: true
+    version: "v1"
+    min_votes: 3              # 최소 투표 수
+
+  search_trend:
+    enabled: true
+    period_start: "2024-01-01"
+    period_end: "auto"        # 현재 월 자동 계산
+
+  dashboard:
+    enabled: true
+    output_path: "02_outputs/dashboard/"
