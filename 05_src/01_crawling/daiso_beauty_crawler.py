@@ -1147,5 +1147,143 @@ def run_all(crawl_reviews=True, crawl_ingredients=True, headless=True,
         logger.info("브라우저 종료 완료")
 
 
+def run_all_bq(headless=True, history=None, bq_dataset="daiso"):
+    """BQ 기반 전체 제품 리뷰 증분 수집
+
+    BQ products_core에서 전체 product_code를 조회하고,
+    각 제품의 상세 페이지에 직접 접근하여 cutoff 이후 리뷰만 수집한다.
+    성분/제품정보는 건너뛰고 리뷰만 수집하므로 효율적이다.
+
+    Parameters
+    ----------
+    headless : 헤드리스 모드
+    history : CrawlHistory 인스턴스 (cutoff 날짜 조회용, 필수)
+    bq_dataset : BQ 데이터셋명
+
+    Returns
+    -------
+    (None, reviews_csv_path, None)
+    """
+    if not history:
+        logger.error("run_all_bq: history 인스턴스가 필요합니다 (cutoff 날짜 조회용)")
+        return None, None, None
+
+    # BQ에서 전체 제품 코드 조회
+    bq_dir = os.path.join(os.path.dirname(__file__), '..', '02_bigquery')
+    sys.path.insert(0, bq_dir)
+    try:
+        from bq_client import query_to_df
+    except ImportError:
+        logger.error("run_all_bq: bq_client 모듈을 불러올 수 없습니다")
+        return None, None, None
+
+    try:
+        df_products = query_to_df(
+            f"SELECT CAST(product_code AS STRING) AS product_code "
+            f"FROM `{bq_dataset}.products_core`"
+        )
+    except Exception as e:
+        logger.error(f"run_all_bq: BQ 제품 조회 실패 — {e}")
+        return None, None, None
+
+    product_codes = df_products["product_code"].tolist()
+    logger.info(f"run_all_bq 시작: BQ에서 {len(product_codes)}개 제품 조회 완료")
+
+    # 드라이버 설정
+    options = webdriver.ChromeOptions()
+    if headless:
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()), options=options
+    )
+
+    all_reviews = []
+    stats = {"updated": 0, "skipped": 0, "error": 0}
+
+    try:
+        for idx, product_code in enumerate(product_codes, 1):
+            try:
+                cutoff = history.get_last_review_date(product_code)
+
+                url = f"{BASE_URL}/pd/pdr/SCR_PDR_0001?pdNo={product_code}"
+                logger.info(
+                    f"[{idx}/{len(product_codes)}] BQ 리뷰 동기화: {product_code} "
+                    f"(cutoff: {cutoff or '없음'})"
+                )
+
+                _, reviews, _ = crawl_product_detail(
+                    driver, url,
+                    category_home="",
+                    category_1="",
+                    category_2="",
+                    crawl_reviews=True,
+                    crawl_ingredients=False,
+                    review_cutoff_date=cutoff,
+                )
+
+                if reviews:
+                    all_reviews.extend(reviews)
+                    max_date = max(r["date"] for r in reviews)
+                    history.update_product(product_code, review_date=max_date)
+                    stats["updated"] += 1
+                    logger.info(f"  → 신규 리뷰 {len(reviews)}개 수집")
+                else:
+                    stats["skipped"] += 1
+
+                # 100개 제품마다 중간 저장
+                if idx % 100 == 0:
+                    _save_intermediate([], all_reviews, [], prefix="bq_sync")
+                    history.save()
+                    logger.info(
+                        f"[중간저장] {idx}/{len(product_codes)}개 처리 | "
+                        f"리뷰 누적: {len(all_reviews)}개"
+                    )
+
+                time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"BQ 리뷰 동기화 실패: {product_code} — {e}")
+                stats["error"] += 1
+                continue
+
+        logger.info(
+            f"run_all_bq 통계: 업데이트={stats['updated']}, "
+            f"스킵={stats['skipped']}, 에러={stats['error']}"
+        )
+
+        # CSV 저장
+        review_file = None
+        if all_reviews:
+            date_str = get_date_string()
+            os.makedirs("data", exist_ok=True)
+            review_file = f"data/reviews_bq_sync_{date_str}.csv"
+            pd.DataFrame(all_reviews).to_csv(
+                review_file, index=False, encoding="utf-8-sig"
+            )
+            logger.info(f"BQ 동기화 리뷰 저장: {review_file} ({len(all_reviews)}개)")
+
+        return None, review_file, None
+
+    except Exception as e:
+        logger.error(f"run_all_bq 오류: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        _save_intermediate([], all_reviews, [], prefix="emergency_bq_sync")
+        raise
+
+    finally:
+        if history:
+            try:
+                history.save()
+                logger.info(f"BQ 동기화 이력 저장 완료 (총 {history.product_count}개 제품)")
+            except Exception as e:
+                logger.error(f"이력 저장 실패: {e}")
+        driver.quit()
+        logger.info("브라우저 종료 완료")
+
+
 if __name__ == "__main__":
     main()

@@ -1,10 +1,14 @@
 pipeline:
   auto_schedule:
-    enabled: false          # 월간 자동 실행 (default: false)
+    enabled: true           # 월간 자동 실행
     cron: "0 3 1 * *"      # 매월 1일 03시
 
   crawling:
     mode: "incremental"     # "incremental" | "full"
+    strategy: "hybrid"      # "scroll" | "bq_sync" | "hybrid"
+    # scroll: 기존 카테고리 스크롤 방식 (기본)
+    # bq_sync: BQ 전체 제품 리뷰 동기화만
+    # hybrid: 카테고리 스크롤(신규 발견) + BQ 동기화(기존 리뷰 업데이트)
     headless: true          # 헤드리스 모드
     crawl_reviews: true
     crawl_ingredients: true
@@ -49,7 +53,7 @@ pipeline:
     min_votes: 3              # 최소 투표 수
 
   search_trend:
-    enabled: true
+    enabled: false            # 자동화 제외 (수동 실행만)
     period_start: "2024-01-01"
     period_end: "auto"        # 현재 월 자동 계산
 

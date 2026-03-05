@@ -110,18 +110,56 @@ def _parse_active_categories(active_categories: dict | None) -> dict | None:
     return result if result else None
 
 
+def _load_history(config: dict, crawler_dir) -> "CrawlHistory":
+    """증분 크롤링용 이력 로드 (BQ → 로컬 CSV 폴백)"""
+    from crawl_history import CrawlHistory
+
+    crawl_cfg = config.get("pipeline", {}).get("crawling", {})
+    history_file = crawl_cfg.get("history_file", "cache/crawl_history.json")
+    history_path = str(PROJECT_ROOT / history_file)
+
+    history = CrawlHistory(history_path)
+    if history.product_count == 0:
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT / "05_src" / "02_bigquery"))
+            from bq_client import query_to_df
+            bq_dataset = config.get("pipeline", {}).get("storage", {}).get("bigquery", {}).get("dataset", "daiso")
+            bq_reviews = query_to_df(
+                f"SELECT CAST(product_code AS STRING) AS product_code, "
+                f"MAX(CAST(review_date AS STRING)) AS max_date "
+                f"FROM `{bq_dataset}.reviews_core` GROUP BY product_code"
+            )
+            for _, row in bq_reviews.iterrows():
+                history.update_product(row["product_code"], review_date=row["max_date"])
+            history.save()
+            print(f"  크롤링 이력 BQ 부트스트래핑: {len(bq_reviews)}개 제품")
+        except Exception:
+            reviews_core_path = str(PROJECT_ROOT / "02_processed_data" / "csv" / "final" / "reviews_core.csv")
+            history = CrawlHistory.from_existing_csv(history_path, reviews_core_path)
+
+    return history
+
+
 def run_crawling(config: dict, force_full: bool = False) -> tuple:
-    """크롤러 실행 → raw CSV 3개 경로 반환"""
+    """크롤러 실행 → raw CSV 3개 경로 반환
+
+    strategy에 따라 동작 방식이 달라진다:
+    - scroll: 기존 카테고리 스크롤 방식 (기본)
+    - bq_sync: BQ 전체 제품 리뷰 동기화만
+    - hybrid: 카테고리 스크롤(신규 발견) + BQ 동기화(기존 리뷰 업데이트)
+    """
     crawl_cfg = config.get("pipeline", {}).get("crawling", {})
     mode = crawl_cfg.get("mode", "incremental")
+    strategy = crawl_cfg.get("strategy", "scroll")
     is_full = force_full or (mode == "full")
+    bq_dataset = config.get("pipeline", {}).get("storage", {}).get("bigquery", {}).get("dataset", "daiso")
 
     # 크롤러 경로 추가
     crawler_dir = PROJECT_ROOT / "05_src" / "01_crawling"
     sys.path.insert(0, str(crawler_dir))
     os.chdir(crawler_dir)
 
-    from daiso_beauty_crawler import run_all
+    from daiso_beauty_crawler import run_all, run_all_bq
     from crawl_history import CrawlHistory
 
     # 카테고리 필터 파싱
@@ -132,41 +170,79 @@ def run_crawling(config: dict, force_full: bool = False) -> tuple:
     # 이력 로드 (증분 모드일 때만)
     history = None
     if not is_full:
-        history_file = crawl_cfg.get("history_file", "cache/crawl_history.json")
-        history_path = str(PROJECT_ROOT / history_file)
-
-        # bootstrapping: 이력 파일이 없으면 BQ → 로컬 CSV 순으로 폴백
-        history = CrawlHistory(history_path)
-        if history.product_count == 0:
-            try:
-                sys.path.insert(0, str(PROJECT_ROOT / "05_src" / "02_bigquery"))
-                from bq_client import query_to_df
-                bq_dataset = config.get("pipeline", {}).get("storage", {}).get("bigquery", {}).get("dataset", "daiso")
-                bq_reviews = query_to_df(
-                    f"SELECT CAST(product_code AS STRING) AS product_code, "
-                    f"MAX(CAST(review_date AS STRING)) AS max_date "
-                    f"FROM `{bq_dataset}.reviews_core` GROUP BY product_code"
-                )
-                for _, row in bq_reviews.iterrows():
-                    history.update_product(row["product_code"], review_date=row["max_date"])
-                history.save()
-                print(f"  크롤링 이력 BQ 부트스트래핑: {len(bq_reviews)}개 제품")
-            except Exception:
-                # BQ 실패 시 로컬 CSV 폴백
-                reviews_core_path = str(PROJECT_ROOT / "02_processed_data" / "csv" / "final" / "reviews_core.csv")
-                history = CrawlHistory.from_existing_csv(history_path, reviews_core_path)
-
+        history = _load_history(config, crawler_dir)
         print(f"  크롤링 모드: 증분 (이력: {history.product_count}개 제품)")
     else:
         print(f"  크롤링 모드: 풀 (전체 재크롤링)")
 
-    products_path, reviews_path, ingredients_path = run_all(
-        crawl_reviews=crawl_cfg.get("crawl_reviews", True),
-        crawl_ingredients=crawl_cfg.get("crawl_ingredients", True),
-        headless=crawl_cfg.get("headless", True),
-        categories_filter=categories_filter,
-        history=history,
-    )
+    # 풀 모드면 strategy 무시하고 기존 scroll 방식
+    if is_full:
+        strategy = "scroll"
+
+    print(f"  크롤링 전략: {strategy}")
+
+    products_path = None
+    reviews_path = None
+    ingredients_path = None
+
+    # --- strategy 분기 ---
+    if strategy == "scroll":
+        products_path, reviews_path, ingredients_path = run_all(
+            crawl_reviews=crawl_cfg.get("crawl_reviews", True),
+            crawl_ingredients=crawl_cfg.get("crawl_ingredients", True),
+            headless=crawl_cfg.get("headless", True),
+            categories_filter=categories_filter,
+            history=history,
+        )
+
+    elif strategy == "bq_sync":
+        _, reviews_path, _ = run_all_bq(
+            headless=crawl_cfg.get("headless", True),
+            history=history,
+            bq_dataset=bq_dataset,
+        )
+
+    elif strategy == "hybrid":
+        # 1단계: 카테고리 스크롤 (신규 제품 발견 + 리뷰 수집)
+        print("\n  [hybrid 1/2] 카테고리 스크롤 (신규 제품 발견)...")
+        products_path, scroll_reviews_path, ingredients_path = run_all(
+            crawl_reviews=crawl_cfg.get("crawl_reviews", True),
+            crawl_ingredients=crawl_cfg.get("crawl_ingredients", True),
+            headless=crawl_cfg.get("headless", True),
+            categories_filter=categories_filter,
+            history=history,
+        )
+
+        # 2단계: BQ 전체 제품 리뷰 동기화
+        print("\n  [hybrid 2/2] BQ 전체 제품 리뷰 동기화...")
+        _, bq_reviews_path, _ = run_all_bq(
+            headless=crawl_cfg.get("headless", True),
+            history=history,
+            bq_dataset=bq_dataset,
+        )
+
+        # 리뷰 CSV 병합 (scroll + bq_sync)
+        review_paths = [p for p in [scroll_reviews_path, bq_reviews_path] if p]
+        if review_paths:
+            dfs = [pd.read_csv(p) for p in review_paths]
+            merged = pd.concat(dfs, ignore_index=True)
+            from utils import get_date_string
+            date_str = get_date_string()
+            reviews_path = f"data/reviews_hybrid_{date_str}.csv"
+            merged.to_csv(reviews_path, index=False, encoding="utf-8-sig")
+            print(f"  hybrid 리뷰 병합: {len(merged)}개 → {reviews_path}")
+        else:
+            reviews_path = None
+
+    else:
+        print(f"  [경고] 알 수 없는 strategy '{strategy}', scroll로 폴백")
+        products_path, reviews_path, ingredients_path = run_all(
+            crawl_reviews=crawl_cfg.get("crawl_reviews", True),
+            crawl_ingredients=crawl_cfg.get("crawl_ingredients", True),
+            headless=crawl_cfg.get("headless", True),
+            categories_filter=categories_filter,
+            history=history,
+        )
 
     # 경로를 절대경로로 변환
     os.chdir(PROJECT_ROOT)
