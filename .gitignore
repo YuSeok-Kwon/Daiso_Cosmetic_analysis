@@ -61,6 +61,11 @@ cache/
 # Backup files
 *.bak
 
+# Tableau 시각화
+*.twbx
+*.twb
+*.hyper
+
 # Model checkpoints
 *.pt
 *.pth
