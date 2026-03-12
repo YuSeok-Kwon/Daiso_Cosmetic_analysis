@@ -66,6 +66,12 @@ cache/
 *.twb
 *.hyper
 
+# 프레젠테이션 / 디자인 바이너리
+*.pptx
+*.ppt
+*.ai
+*.ico
+
 # Model checkpoints
 *.pt
 *.pth
