@@ -1,0 +1,198 @@
+런칭평가 - 경쟁사 정보 바 차트 + ASPECT 필터 구현 가이드 (v2)
+================================================================
+수정일: 2026-03-12 (ERD v3 기반 실제 테이블명 반영)
+
+■ 현황 요약
+----------------------------------------------------------------
+기존 v_category_price_scenario에 likes, shares, ingredient_count,
+is_functional이 없어서 6개 메트릭 + 3조건 필터 불가.
+→ BigQuery 뷰 2개 신규 생성으로 해결.
+
+■ 신규 BigQuery 뷰 2개
+----------------------------------------------------------------
+1. v_competitor_metrics   → 6개 메트릭 바 차트용
+2. v_sim_category_absa_v2 → 긍정/부정 ASPECT 3조건 필터용
+
+SQL 파일 위치:
+  05_src/02_bigquery/v_competitor_metrics.sql
+  05_src/02_bigquery/v_sim_category_absa_v2.sql
+
+
+================================================================
+STEP 1: BigQuery에서 뷰 생성
+================================================================
+
+1-1. BigQuery 콘솔 > 위 SQL 파일 2개를 순서대로 실행
+1-2. 생성 확인:
+     SELECT * FROM `daiso.v_competitor_metrics` LIMIT 10;
+     SELECT * FROM `daiso.v_sim_category_absa_v2` LIMIT 10;
+
+
+================================================================
+STEP 2: Tableau에 새 데이터소스 연결
+================================================================
+
+[v_competitor_metrics 연결]
+1. Tableau > 데이터 > 새 데이터 소스 > Google BigQuery
+2. 프로젝트: daiso-analysis > 데이터세트: daiso > v_competitor_metrics
+3. 추출(Extract) 생성 권장
+
+[v_sim_category_absa_v2 연결]
+1. 동일 방식으로 v_sim_category_absa_v2 연결
+2. 추출 생성
+
+
+================================================================
+STEP 3: 경쟁사 메트릭 바 차트 워크시트 생성
+================================================================
+
+워크시트명: "경쟁사 메트릭 비교"
+데이터소스: v_competitor_metrics
+
+3-1. 계산된 필드 생성
+
+  [필터_동_카테고리]
+  ─────────────────
+  [category_2] = [Parameters].[매개 변수 1]
+  ─────────────────
+  ※ 매개 변수 1 = p_category_2
+
+  [필터_동_가격대]
+  ─────────────────
+  [price_tier] =
+    IF [Parameters].[매개 변수 3] <= 1000 THEN '1K'
+    ELSEIF [Parameters].[매개 변수 3] <= 2000 THEN '2K'
+    ELSEIF [Parameters].[매개 변수 3] <= 3000 THEN '3K'
+    ELSE '5K'
+    END
+  ─────────────────
+  ※ 매개 변수 3 = p_price
+  ※ price_tier 정의: 1K(~1000), 2K(~2000), 3K(~3000), 5K(3001~)
+
+  [필터_동_기능성]
+  ─────────────────
+  [is_functional] = [Parameters].[매개 변수 7]
+  ─────────────────
+  ※ 매개 변수 7 = p_is_functional (true/false)
+
+  [필터_경쟁사_통합]
+  ─────────────────
+  [필터_동_카테고리] AND [필터_동_가격대] AND [필터_동_기능성]
+  ─────────────────
+
+3-2. 워크시트 구성
+
+  필터 선반: [필터_경쟁사_통합] = true
+
+  방법 A: Measure Names / Measure Values 방식
+  ─────────────────────────────────────────
+  행(Rows):    Measure Names
+  열(Columns): AVG(Measure Values)
+
+  Measure Values 선반에 아래 6개만 남기기:
+    - AVG(engagement_score)
+    - AVG(cp_index)
+    - AVG(ingredient_count)
+    - AVG(review_count)
+    - AVG(likes)
+    - AVG(shares)
+
+  Measure Names 필터: 위 6개만 체크
+
+  마크: 바
+  색상: Measure Names (메트릭별 색 구분)
+  레이블: AVG(Measure Values) → 소수점 1자리
+
+  방법 B: 선택 브랜드 vs 경쟁사 평균 이중 바
+  ─────────────────────────────────────────
+  선택 브랜드 값과 경쟁사 전체 평균을 나란히 비교하려면:
+
+  [내_브랜드_engagement]
+  ─────────────────
+  IF [brand_name] = [Parameters].[매개 변수 12]
+  THEN [engagement_score]
+  END
+  ─────────────────
+
+  동일 패턴으로 6개 메트릭 각각 생성 후:
+  열: AVG(내_브랜드_XX), AVG(XX) 를 이중 축으로 구성
+  또는 Measure Names에 12개(내 브랜드 6 + 전체 6) 넣고
+  색상으로 구분
+
+3-3. 서식 권장
+  - Measure Names 별칭(Alias) 수정:
+    engagement_score → "참여지수"
+    cp_index → "가성비"
+    ingredient_count → "성분 수"
+    review_count → "리뷰 수"
+    likes → "좋아요"
+    shares → "공유"
+  - 바 색상: 다이소 CI 컬러 계열
+  - 레이블: 정수 또는 소수점 1자리
+
+
+================================================================
+STEP 4: 긍정/부정 ASPECT 필터 수정
+================================================================
+
+기존 데이터소스 교체:
+  v_sim_category_absa → v_sim_category_absa_v2
+
+4-1. 데이터소스 바꾸기
+  1. 데이터 메뉴 > v_sim_category_absa(daiso) 우클릭 > "데이터 소스 바꾸기..."
+  2. v_sim_category_absa_v2 선택
+  3. 기존 필드명이 동일하므로 자동 매핑됨
+     (category_2, aspect, pos_count 등 모두 유지)
+  ※ 새로 추가된 필드: price_tier, is_functional
+
+4-2. 계산된 필드 수정
+
+  기존 [같은_카테고리_여부] 를 아래로 변경:
+
+  [필터_ASPECT_통합]
+  ─────────────────
+  [category_2] = [Parameters].[매개 변수 14]
+  AND [price_tier] =
+    IF [Parameters].[매개 변수 3] <= 1000 THEN '1K'
+    ELSEIF [Parameters].[매개 변수 3] <= 2000 THEN '2K'
+    ELSEIF [Parameters].[매개 변수 3] <= 3000 THEN '3K'
+    ELSE '5K'
+    END
+  AND [is_functional] = [Parameters].[매개 변수 7]
+  ─────────────────
+
+  또는 기존 [같은_카테고리_여부]의 수식을 직접 위 내용으로 교체
+
+4-3. 워크시트 필터 교체
+  "긍정" 워크시트:
+    기존 필터 [같은_카테고리_여부] = true 제거
+    새 필터 [필터_ASPECT_통합] = true 추가
+
+  "부정" 워크시트:
+    동일하게 교체
+
+
+================================================================
+STEP 5: 런칭 평가 대시보드 배치
+================================================================
+
+1. 대시보드 편집 모드 진입
+2. "경쟁사 메트릭 비교" 워크시트를 긍정/부정 차트 옆 또는 위에 배치
+3. 매개변수 변경 시 자동 갱신 확인:
+   - p_category_2 변경 → 경쟁사 차트 + ASPECT 차트 모두 갱신
+   - p_price 변경 → 동일
+   - p_is_functional 변경 → 동일
+
+
+================================================================
+체크리스트
+================================================================
+
+[ ] BigQuery: v_competitor_metrics 뷰 생성
+[ ] BigQuery: v_sim_category_absa_v2 뷰 생성
+[ ] Tableau: v_competitor_metrics 데이터소스 연결 + 추출
+[ ] Tableau: 경쟁사 메트릭 비교 워크시트 생성
+[ ] Tableau: v_sim_category_absa 데이터소스를 v2로 교체
+[ ] Tableau: 긍정/부정 워크시트 필터 교체
+[ ] Tableau: 런칭 평가 대시보드에 배치
+[ ] 테스트: 매개변수 변경 시 모든 차트 연동 확인

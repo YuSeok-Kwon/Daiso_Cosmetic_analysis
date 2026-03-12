@@ -1,8 +1,23 @@
-# BigQuery 중심 월간 자동 파이프라인 설계서 v1.0
+# BigQuery 중심 월간 자동 파이프라인 설계서 v2.0
 
-> **작성일:** 2026-02-27
+> **작성일:** 2026-03-03 (v1: 2026-02-27)
 > **작성자:** 권유석
-> **목적:** 로컬 CSV 제거 → BigQuery Single Source of Truth 전환 + ABSA/SLI/검색트렌드/대시보드 자동화
+> **목적:** 로컬 CSV 제거 → BigQuery Single Source of Truth 전환 + ABSA/SLI 자동화 파이프라인 완성 + 월간 cron 스케줄링 활성화
+
+---
+
+## v2 변경사항 (v1 → v2)
+
+| 항목                           | v1                    | v2                                                   |
+| ------------------------------ | --------------------- | ---------------------------------------------------- |
+| `auto_schedule.enabled`      | `false`             | **`true`** (cron 등록 완료)                  |
+| `search_trend.enabled`       | `true`              | **`false`** (수동 실행 전환)                 |
+| `scheduler.py` 대상 스크립트 | `run_pipeline.py`   | **`run_monthly_pipeline.py`**                |
+| `scheduler.py` cron 플래그   | `--local-only`      | **(제거)** — run_monthly_pipeline에 없는 옵션 |
+| SLI ML 모델                    | XGBoost (설계서 오기) | **LightGBM** (실제 구현)                       |
+| Phase 3 검색트렌드             | ⬜ BQ 연결 미완       | **의도적 비활성화** (수동 전용)                |
+| Phase 5 스케줄링               | ⬜ 미착수             | **cron 등록 완료**                             |
+| 코드 수정 계획                 | 의사코드 (계획)       | **전량 구현 완료**                             |
 
 ---
 
@@ -42,14 +57,16 @@
 
 - **BigQuery = Single Source of Truth**: 모든 데이터를 BQ에 적재, 로컬에는 임시 파일만
 - **증분 UPSERT**: transformer가 신규 데이터만 변환 → BQ MERGE로 기존 데이터와 합침
-- **파이프라인 연쇄**: 크롤링 → ABSA → SLI → 검색트렌드 → 대시보드가 자동으로 연결
-- **월 1회 자동 실행**: 스케줄러로 전체 파이프라인 트리거
+- **파이프라인 연쇄**: 크롤링 → ABSA → SLI → 대시보드가 자동으로 연결
+- **월 1회 자동 실행**: cron 스케줄러로 전체 파이프라인 트리거 (매월 1일 03:00)
+- **검색트렌드 분리**: API 호출 제한·비용 고려하여 수동 실행으로 분리
 
 ### 2.2 전체 데이터 흐름
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                    월간 자동 파이프라인                           │
+│                    cron: 0 3 1 * * (매월 1일 03시)               │
 │                                                                  │
 │  Step 1: 증분 크롤링                                             │
 │  ┌─────────────┐    ┌───────────────┐    ┌──────────────────┐   │
@@ -61,31 +78,48 @@
 │       │ (BQ 조회)                     ┌──────────────────┐      │
 │       └──────────────────────────────→│ BigQuery         │      │
 │                                       │ daiso 데이터셋    │      │
-│  Step 2: ABSA 증분 추론               │                  │      │
-│  ┌─────────────┐                      │  13개 ERD 테이블  │      │
-│  │ KcELECTRA   │←── 신규 review_id ──│  + 5개 분석 테이블│      │
+│  Step 2: 변환 + BQ UPSERT            │                  │      │
+│  (Step 1에서 자동 처리)               │  13개 ERD 테이블  │      │
+│                                       │  + 5개 분석 테이블│      │
+│  Step 3: ABSA 증분 추론              │                  │      │
+│  ┌─────────────┐                      │                  │      │
+│  │ KcELECTRA   │←── 신규 review_id ──│                  │      │
 │  │ 추론        │───→ UPSERT ────────→│                  │      │
 │  └─────────────┘                      │                  │      │
 │                                       │                  │      │
-│  Step 3: SLI 연착륙 재계산            │                  │      │
+│  Step 4: SLI 연착륙 재계산            │                  │      │
 │  ┌─────────────┐                      │                  │      │
 │  │ DTW+생존    │←── 리뷰 시계열 ─────│                  │      │
 │  │ +규칙+ML    │───→ UPSERT ────────→│                  │      │
+│  │ (LightGBM)  │                      │                  │      │
 │  └─────────────┘                      │                  │      │
 │                                       │                  │      │
-│  Step 4: 네이버 검색트렌드            │                  │      │
+│  Step 5: 네이버 검색트렌드 [비활성]   │                  │      │
 │  ┌─────────────┐                      │                  │      │
-│  │ DataLab API │←── 연착륙 목록 ─────│                  │      │
-│  │ Search API  │───→ UPSERT ────────→│                  │      │
+│  │ config에서   │  enabled: false      │                  │      │
+│  │ 자동 SKIP    │  (수동 실행 전용)    │                  │      │
 │  └─────────────┘                      │                  │      │
 │                                       │                  │      │
-│  Step 5: 대시보드 생성                │                  │      │
+│  Step 6: 대시보드 생성                │                  │      │
 │  ┌─────────────┐                      │                  │      │
 │  │ HTML/JS     │←── 집계 쿼리 ───────│                  │      │
 │  │ 대시보드    │                      │                  │      │
 │  └─────────────┘                      └──────────────────┘      │
 │                                                                  │
-│  Step 6: pipeline_log 기록                                       │
+│  * 각 Step 완료 시 pipeline_log 자동 기록                        │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│                    수동 실행 파이프라인                           │
+│                                                                  │
+│  검색트렌드 수집 (네이버 DataLab + Search API)                    │
+│  ┌─────────────┐                      ┌──────────────────┐      │
+│  │ DataLab API │←── 연착륙 목록 ─────│ BigQuery         │      │
+│  │ Search API  │───→ UPSERT ────────→│ search_trends    │      │
+│  └─────────────┘                      └──────────────────┘      │
+│                                                                  │
+│  실행: python run_monthly_pipeline.py --steps 5                  │
+│  (또는 기존 스크립트 직접 실행)                                    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -361,12 +395,12 @@ ORDER BY month;
 | `product_code` (PK, FK) | INT64    | 상품 고유 코드 (products_core 참조)     |
 | `is_soft_landing_dtw`   | BOOL     | DTW 클러스터링 기반 연착륙 여부         |
 | `is_soft_landing_surv`  | BOOL     | 생존분석(Kaplan-Meier) 기반 연착륙 여부 |
-| `is_soft_landing_rule`  | BOOL     | 규칙 기반 연착륙 여부                   |
-| `is_soft_landing_ml`    | BOOL     | ML(XGBoost) 기반 연착륙 여부            |
+| `is_soft_landing_rule`  | BOOL     | SLI_v2 규칙 기반 연착륙 여부            |
+| `is_soft_landing_ml`    | BOOL     | ML(LightGBM) 기반 연착륙 여부           |
 | `total_votes`           | INT64    | 만장일치 투표 수 (0~4)                  |
 | `final_soft_landing`    | BOOL     | 최종 연착륙 판별 (total_votes >= 3)     |
 | `confidence`            | FLOAT64  | 판별 신뢰도                             |
-| `ml_prob`               | FLOAT64  | ML 모델 확률                            |
+| `ml_prob`               | FLOAT64  | LightGBM 모델 확률                      |
 | `sli_version`           | STRING   | SLI 모델 버전 ("v1", "v2" 등)           |
 | `calculated_at`         | DATETIME | 계산 시각                               |
 
@@ -450,14 +484,15 @@ CREATE TABLE IF NOT EXISTS `daiso.pipeline_log` (
 
 ---
 
-## 4. 코드 수정 계획
+## 4. 구현 완료 현황
 
-### 4.1 transformer.py 수정 — 증분 전용 전환
+> v1에서는 "코드 수정 계획 (의사코드)"이었으나, v2 기준으로 전량 구현이 완료되었습니다.
 
-**현재:** 전체 raw CSV를 입력받아 전체 테이블을 재생성
-**변경:** 신규 raw만 입력받아 신규분만 변환 → BQ UPSERT가 병합 담당
+### 4.1 transformer.py — 증분 전용 전환
 
-| 수정 대상                 | 현재                                       | 변경                                              |
+**변경 완료:** 전체 raw CSV 입력 → 신규 raw만 입력, BQ UPSERT가 병합 담당
+
+| 수정 대상                 | AS-IS                                      | TO-BE (구현 완료)                                 |
 | ------------------------- | ------------------------------------------ | ------------------------------------------------- |
 | `load_existing_final()` | 로컬 final/ CSV 로드                       | BQ에서 기존 ID 매핑 조회 (`query_to_df`)        |
 | `_transform_brand()`    | 로컬 brand.csv에서 max_id                  | `SELECT MAX(brand_id) FROM daiso.brand`         |
@@ -465,180 +500,65 @@ CREATE TABLE IF NOT EXISTS `daiso.pipeline_log` (
 | `user_id_map`           | 로컬 user_id_map.csv 읽기/쓰기             | BQ user_id_map 테이블 조회/UPSERT                 |
 | 결과 저장                 | `LocalStorage.save_all()` → CSV/Parquet | `CrawlerETLv2.upload_all()` → BQ UPSERT만      |
 
-**핵심 변경 코드 (의사코드):**
+### 4.2 run_absa_incremental.py — ABSA 증분 추론
 
-```python
-# 변경 전
-existing_data = load_existing_final(final_dir)  # 로컬 CSV
+BQ에서 미추론 리뷰 조회 → KcELECTRA(Stage 3A) 추론 → BQ UPSERT
 
-# 변경 후
-from bq_client import query_to_df
+- 미추론 리뷰: `LEFT JOIN review_absa WHERE ra.review_id IS NULL`
+- 모델: `prod_bundle_stage3a_v1_20260225`
+- 버전: `stage3a_v2`
 
-def load_existing_from_bq(dataset="daiso") -> Dict[str, pd.DataFrame]:
-    """BigQuery에서 ID 매핑에 필요한 최소 데이터만 조회"""
-    data = {}
-    # brand: name → brand_id 매핑만
-    data["brand"] = query_to_df(f"SELECT brand_id, name FROM `{dataset}.brand`")
-    # ingredients_dic: ingredient_name → ingredient_id 매핑만
-    data["ingredients_dic"] = query_to_df(
-        f"SELECT ingredient_id, ingredient_name, ingredient_type FROM `{dataset}.ingredients_dic`"
-    )
-    # user_id_map: user_masked → user_id 매핑
-    data["user_id_map"] = query_to_df(f"SELECT * FROM `{dataset}.user_id_map`")
-    # max review_id
-    data["max_review_id"] = query_to_df(
-        f"SELECT COALESCE(MAX(review_id), 0) AS max_id FROM `{dataset}.reviews_core`"
-    )["max_id"].iloc[0]
-    return data
-```
+### 4.3 run_sli.py (598줄) — SLI 스크립트화
 
-### 4.2 crawl_history.py 수정 — BQ 기반 이력 관리
+노트북(`03_notebooks/06_SLI/6. SLI_통합분석_DTW_생존분석_ML.ipynb`)의 핵심 로직을 완전히 스크립트로 전환.
 
-**현재:** `crawl_history.json` 파일로 product_code별 last_review_date 관리
-**변경:** BQ reviews_core에서 직접 조회
+- 4가지 방법론: DTW 클러스터링 + 생존분석(Kaplan-Meier) + SLI_v2 규칙기반 + ML(LightGBM)
+- 만장일치 투표: `min_votes=3` (config 설정 가능)
+- 전체 재계산 방식 (증분이 아닌 매월 전체 리뷰 기반)
 
-```python
-# 변경 후
-def get_last_review_dates_from_bq(dataset="daiso") -> dict:
-    """BQ에서 제품별 마지막 리뷰 날짜 조회"""
-    df = query_to_df(f"""
-        SELECT product_code, MAX(review_date) AS last_review_date
-        FROM `{dataset}.reviews_core`
-        GROUP BY product_code
-    """)
-    return dict(zip(df["product_code"], df["last_review_date"].astype(str)))
-```
+### 4.4 run_monthly_pipeline.py (365줄) — 오케스트레이션
 
-### 4.3 ABSA 추론 파이프라인 추가
+6단계 순차 실행 + pipeline_log 자동 기록.
 
-**신규 스크립트:** `05_src/04_pipeline/run_absa_incremental.py`
+- 핵심 단계(crawling, transform) 실패 시 전체 중단
+- 분석 단계(absa, sli, search_trend, dashboard) 실패 시 다음으로 계속
+- CLI 옵션: `--skip-crawl`, `--steps 3,4`, `--dry-run`, `--dataset`
 
-```python
-# 의사코드
-def run_absa_incremental():
-    """BQ에서 미추론 리뷰 조회 → 추론 → BQ UPSERT"""
+### 4.5 scheduler.py (121줄) — cron 스케줄러
 
-    # 1. 미추론 리뷰 조회
-    new_reviews = query_to_df("""
-        SELECT rc.review_id, rt.text
-        FROM `daiso.reviews_core` rc
-        JOIN `daiso.reviews_text` rt ON rc.review_id = rt.review_id
-        LEFT JOIN `daiso.review_absa` ra ON rc.review_id = ra.review_id
-        WHERE ra.review_id IS NULL
-    """)
+- config.yaml의 cron 표현식을 읽어 crontab 등록/해제
+- **v2 수정:** 대상 스크립트를 `run_monthly_pipeline.py`로 변경 (v1: `run_pipeline.py`)
+- **v2 수정:** `--local-only` 플래그 제거 (run_monthly_pipeline에 없는 옵션)
 
-    if new_reviews.empty:
-        return {"status": "skip", "reason": "no new reviews"}
-
-    # 2. KcELECTRA 추론
-    from RQ_absa.s8_inference import ABSAInferencer
-    inferencer = ABSAInferencer.from_bundle(BUNDLE_PATH)
-    results = inferencer.predict_batch(new_reviews["text"].tolist())
-
-    # 3. review_absa 테이블 생성
-    absa_df = pd.DataFrame({
-        "review_id": new_reviews["review_id"],
-        "sentiment": [r["sentiment"] for r in results],
-        "sentiment_score": [r["sentiment_score"] for r in results],
-        "is_ambiguous": [r["is_ambiguous"] for r in results],
-        "aspect_count": [len(r["aspect_sentiments"]) for r in results],
-        "absa_version": "stage3a_v2",
-        "inferred_at": datetime.now(),
-    })
-
-    # 4. review_aspects 테이블 생성 (정규화)
-    aspects_rows = []
-    for idx, r in enumerate(results):
-        for asp in r["aspect_sentiments"]:
-            aspects_rows.append({
-                "review_id": new_reviews.iloc[idx]["review_id"],
-                "aspect": asp["aspect"],
-                "aspect_sentiment": asp["sentiment"],
-                "aspect_confidence": asp["confidence"],
-            })
-    aspects_df = pd.DataFrame(aspects_rows)
-
-    # 5. BQ UPSERT
-    upsert_df(absa_df, "review_absa", key_columns=["review_id"])
-    upsert_df(aspects_df, "review_aspects", key_columns=["review_id", "aspect"])
-```
-
-### 4.4 SLI 노트북 → 스크립트 전환
-
-**신규 스크립트:** `05_src/04_pipeline/run_sli.py`
-
-현재 노트북(`03_notebooks/06_SLI/6. SLI_통합분석_DTW_생존분석_ML.ipynb`)의 핵심 로직을 추출하여 스크립트화.
-
-```python
-# 의사코드
-def run_sli():
-    """BQ에서 리뷰 시계열 조회 → SLI 4가지 방법론 → BQ UPSERT"""
-
-    # 1. 월별 리뷰 수 시계열 조회
-    monthly_reviews = query_to_df("""
-        SELECT
-            product_code,
-            FORMAT_DATE('%Y-%m', review_date) AS month,
-            COUNT(*) AS review_count
-        FROM `daiso.reviews_core`
-        GROUP BY product_code, month
-        ORDER BY product_code, month
-    """)
-
-    # 2. 4가지 방법론 실행
-    dtw_results = run_dtw_clustering(monthly_reviews)
-    surv_results = run_survival_analysis(monthly_reviews)
-    rule_results = run_rule_based(monthly_reviews)
-    ml_results = run_ml_classifier(monthly_reviews)
-
-    # 3. 만장일치 투표
-    sli_df = merge_votes(dtw_results, surv_results, rule_results, ml_results)
-    sli_df["sli_version"] = "v1"
-    sli_df["calculated_at"] = datetime.now()
-
-    # 4. BQ UPSERT
-    upsert_df(sli_df, "sli_results", key_columns=["product_code"])
-```
-
-### 4.5 검색트렌드 BQ 연결
-
-**수정 대상:** `06_analysis/04_search_trend/06_scripts/run_soft_landing_search_trend.py`
-
-```python
-# 변경점: 연착륙 제품 목록을 BQ에서 조회
-def get_soft_landing_products():
-    return query_to_df("""
-        SELECT pc.product_code, pc.name, b.name AS brand_name
-        FROM `daiso.sli_results` sr
-        JOIN `daiso.products_core` pc ON sr.product_code = pc.product_code
-        JOIN `daiso.brand` b ON pc.brand_id = b.brand_id
-        WHERE sr.final_soft_landing = TRUE
-    """)
-
-# 변경점: 결과를 BQ에 저장
-def save_trends_to_bq(trends_df):
-    upsert_df(trends_df, "search_trends",
-              key_columns=["product_code", "period", "source"])
-```
-
-### 4.6 config.yaml 변경
+### 4.6 config.yaml — 현재 설정 (v2)
 
 ```yaml
-# 변경 후
 pipeline:
+  auto_schedule:
+    enabled: true           # ← v2: 활성화 (v1: false)
+    cron: "0 3 1 * *"      # 매월 1일 03시
+
   crawling:
     mode: "incremental"
     headless: true
     crawl_reviews: true
     crawl_ingredients: true
-    # history_file 제거 (BQ에서 조회)
+    history_file: "05_src/01_crawling/cache/crawl_history.json"
+    active_categories:
+      스킨케어: [all]
+      메이크업: [all]
+      네일용품: [all]
+      맨케어: [all]
+      미용소품: [all]
+      헤어/바디: [all]
 
   storage:
     local:
-      csv: false      # 로컬 CSV 비활성화
-      parquet: false   # 로컬 Parquet 비활성화
+      csv: false             # 로컬 CSV 비활성화 (BQ 전환)
+      parquet: false
+      base_dir: "02_processed_data"
     bigquery:
-      enabled: true    # BigQuery 활성화
+      enabled: true
       dataset: "daiso"
 
   absa:
@@ -649,107 +569,121 @@ pipeline:
   sli:
     enabled: true
     version: "v1"
-    min_votes: 3       # 최소 투표 수
+    min_votes: 3
 
   search_trend:
-    enabled: true
+    enabled: false            # ← v2: 비활성화 (수동 실행 전용)
     period_start: "2024-01-01"
-    period_end: "auto"  # 현재 월 자동 계산
+    period_end: "auto"
 
   dashboard:
     enabled: true
     output_path: "02_outputs/dashboard/"
 ```
 
+### 4.7 검색트렌드 BQ 연결 (부분 구현)
+
+`step_search_trend()`는 BQ에서 연착륙 제품 목록 조회까지 구현. 실제 네이버 API 호출은 기존 스크립트 활용.
+
+**수동 실행 방법:**
+
+```bash
+# 방법 1: 파이프라인에서 Step 5만 실행
+python 05_src/04_pipeline/run_monthly_pipeline.py --steps 5
+
+# 방법 2: 기존 스크립트 직접 실행
+python 06_analysis/04_search_trend/06_scripts/run_soft_landing_search_trend.py
+```
+
 ---
 
 ## 5. 월간 파이프라인 오케스트레이션
 
-### 5.1 메인 실행 스크립트 (신규)
+### 5.1 실행 방법
 
-**파일:** `05_src/04_pipeline/run_monthly_pipeline.py`
+```bash
+# 전체 실행 (Step 1~6)
+python 05_src/04_pipeline/run_monthly_pipeline.py
 
-```python
-# 의사코드
-def main():
-    """월간 전체 파이프라인 실행"""
-    config = load_config()
-    run_id = get_next_run_id()
+# 크롤링 건너뛰기 (Step 3~6만)
+python 05_src/04_pipeline/run_monthly_pipeline.py --skip-crawl
 
-    steps = [
-        ("crawling",      run_crawling),
-        ("transform",     run_transform_and_upload),
-        ("absa",          run_absa_incremental),
-        ("sli",           run_sli),
-        ("search_trend",  run_search_trends),
-        ("dashboard",     run_dashboard_generation),
-    ]
+# 특정 단계만 실행
+python 05_src/04_pipeline/run_monthly_pipeline.py --steps 3,4
 
-    for step_name, step_func in steps:
-        start = time.time()
-        try:
-            result = step_func(config)
-            log_step(run_id, step_name, "success", result, time.time() - start)
-        except Exception as e:
-            log_step(run_id, step_name, "fail", None, time.time() - start, str(e))
-            if step_name in ("crawling", "transform"):
-                break  # 핵심 단계 실패 시 중단
-            continue     # 분석 단계 실패 시 다음으로
+# 실행 안 하고 계획만 표시
+python 05_src/04_pipeline/run_monthly_pipeline.py --dry-run
 
-    print_summary(run_id)
+# cron 스케줄러 관리
+python 05_src/04_pipeline/scheduler.py --status   # 상태 확인
+python 05_src/04_pipeline/scheduler.py --enable    # cron 등록
+python 05_src/04_pipeline/scheduler.py --disable   # cron 해제
 ```
 
 ### 5.2 실행 순서 및 의존성
 
 ```
-Step 1: 크롤링 (crawling)
+Step 1: 크롤링 (crawling) [핵심]
   └─ 선행 조건: 없음
   └─ 출력: 3개 raw DataFrame (메모리)
   └─ 실패 시: 전체 중단
 
-Step 2: 변환 + BQ 적재 (transform)
+Step 2: 변환 + BQ 적재 (transform) [핵심]
   └─ 선행 조건: Step 1 완료
   └─ 출력: BQ 13개 테이블 UPSERT
   └─ 실패 시: 전체 중단
 
-Step 3: ABSA 증분 추론 (absa)
+Step 3: ABSA 증분 추론 (absa) [분석]
   └─ 선행 조건: Step 2 완료 (신규 리뷰가 BQ에 있어야)
   └─ 출력: BQ review_absa + review_aspects UPSERT
   └─ 실패 시: Step 4로 진행 (이전 ABSA 결과 사용)
 
-Step 4: SLI 연착륙 재계산 (sli)
+Step 4: SLI 연착륙 재계산 (sli) [분석]
   └─ 선행 조건: Step 2 완료 (최신 리뷰 데이터)
   └─ 출력: BQ sli_results UPSERT
   └─ 실패 시: Step 5로 진행 (이전 SLI 결과 사용)
 
-Step 5: 검색트렌드 수집 (search_trend)
-  └─ 선행 조건: Step 4 완료 (연착륙 제품 목록)
-  └─ 출력: BQ search_trends UPSERT
-  └─ 실패 시: Step 6으로 진행
+Step 5: 검색트렌드 수집 (search_trend) [비활성 — config에서 skip]
+  └─ config.yaml: search_trend.enabled: false
+  └─ 자동 실행 시 즉시 skip (rows_affected=0, status="disabled")
+  └─ 수동 실행: python run_monthly_pipeline.py --steps 5
 
-Step 6: 대시보드 생성 (dashboard)
+Step 6: 대시보드 생성 (dashboard) [분석]
   └─ 선행 조건: Step 2 이상 완료
   └─ 출력: HTML 대시보드 파일
-  └─ 실패 시: 로그만 기록
+  └─ 실패 시: 로그만 기록 (Phase 4 미착수)
 ```
 
 ### 5.3 예상 소요 시간
 
-| 단계            | 풀 크롤링         | 증분 (월간)           |
-| --------------- | ----------------- | --------------------- |
-| 크롤링          | 8~12시간          | 1~3시간               |
-| 변환 + BQ 적재  | 5~10분            | 2~5분                 |
-| ABSA 추론 (GPU) | 63분 (32만건)     | 5~15분 (1~3만건)     |
-| SLI 계산        | 10~20분           | 10~20분 (전체 재계산) |
-| 검색트렌드 API  | 30~60분           | 10~30분 (신규만)      |
-| 대시보드 생성   | 1~2분             | 1~2분                 |
-| **합계**  | **~14시간** | **~4시간**      |
+| 단계            | 풀 크롤링         | 증분 (월간)                |
+| --------------- | ----------------- | -------------------------- |
+| 크롤링          | 8~12시간          | 1~3시간                    |
+| 변환 + BQ 적재  | 5~10분            | 2~5분                      |
+| ABSA 추론 (GPU) | 63분 (32만건)     | 5~15분 (1~3만건)          |
+| SLI 계산        | 10~20분           | 10~20분 (전체 재계산)      |
+| 검색트렌드 API  | ~~30~60분~~      | **SKIP** (수동 전용) |
+| 대시보드 생성   | 1~2분             | 1~2분                      |
+| **합계**  | **~14시간** | **~3.5시간**         |
+
+### 5.4 cron 스케줄 (v2 활성화)
+
+```
+# 현재 등록된 crontab
+0 3 1 * * /opt/homebrew/opt/python@3.14/bin/python3.14 \
+  /Users/yu_seok/.../05_src/04_pipeline/run_monthly_pipeline.py \
+  # whypi-pipeline-auto
+```
+
+- **실행 주기:** 매월 1일 03:00
+- **대상:** `run_monthly_pipeline.py` (6단계 오케스트레이션)
+- **실제 실행:** Step 1~4, 6 (Step 5는 config에서 자동 skip)
 
 ---
 
-## 6. BQ 테이블 PK 매핑 (bq_client.py 업데이트)
+## 6. BQ 테이블 PK 매핑 (bq_client.py)
 
-기존 `TABLE_KEYS`에 신규 5개 테이블 추가:
+기존 `TABLE_KEYS`에 신규 5개 테이블 추가 완료:
 
 ```python
 TABLE_KEYS = {
@@ -779,30 +713,30 @@ TABLE_KEYS = {
 
 ---
 
-## 7. 마이그레이션 계획
+## 7. 마이그레이션 진행 현황
 
-### 7.1 Phase 1 — BQ 스키마 확장 ✅ 완료
+### 7.1 Phase 1 — BQ 스키마 확장 완료
 
-1. ✅ `schema_v3.sql` 생성 (신규 5개 테이블 DDL 추가)
-2. ✅ `bq_client.py`의 `TABLE_KEYS`에 신규 5개 테이블 추가 (ERD v3 — 18개)
-3. ✅ `migrate_v3.py` 마이그레이션 스크립트 작성 (ABSA CSV → review_absa + review_aspects, SLI CSV → sli_results 초기 적재)
+1. `schema_v3.sql` 생성 (신규 5개 테이블 DDL 추가)
+2. `bq_client.py`의 `TABLE_KEYS`에 신규 5개 테이블 추가 (ERD v3 — 18개)
+3. `migrate_v3.py` 마이그레이션 스크립트 작성 (ABSA CSV → review_absa + review_aspects, SLI CSV → sli_results 초기 적재)
 4. ⬜ BQ에서 DDL 실행하여 테이블 생성 (migrate_v3.py 실행 필요)
-5. ✅ `config.yaml` 업데이트 (absa/sli/search_trend/dashboard 섹션 추가, bigquery.enabled=true)
+5. `config.yaml` 업데이트 (absa/sli/search_trend/dashboard 섹션 추가, bigquery.enabled=true)
 
-### 7.2 Phase 2 — transformer BQ 전환 ✅ 완료
+### 7.2 Phase 2 — transformer BQ 전환 완료
 
-1. ✅ `load_existing_from_bq()` 함수 구현 (transformer.py)
-2. ✅ `transformer.py` user_id_map BQ 기반 전환 (existing_data["user_id_map"] 우선 사용)
-3. ✅ `run_pipeline.py` BQ 직접 적재 모드 수정 (use_bq 플래그, 로컬/BQ 분기)
+1. `load_existing_from_bq()` 함수 구현 (transformer.py)
+2. `transformer.py` user_id_map BQ 기반 전환 (existing_data["user_id_map"] 우선 사용)
+3. `run_pipeline.py` BQ 직접 적재 모드 수정 (use_bq 플래그, 로컬/BQ 분기)
 4. ⬜ 증분 크롤링 → BQ UPSERT 테스트
 5. ⬜ `crawl_history.py` BQ 기반 전환 (현재 로컬 JSON 유지)
 
-### 7.3 Phase 3 — 분석 파이프라인 통합 ✅ 완료
+### 7.3 Phase 3 — 분석 파이프라인 통합 완료
 
-1. ✅ `run_absa_incremental.py` 구현 (미추론 리뷰 조회 → KcELECTRA 추론 → BQ UPSERT)
-2. ✅ `run_sli.py` SLI 스크립트화 (DTW + 생존분석 + 규칙기반 + LightGBM → 만장일치 투표)
-3. ✅ `run_monthly_pipeline.py` 오케스트레이션 구현 (6단계 순차 실행 + pipeline_log 기록)
-4. ⬜ 검색트렌드 BQ 연결 수정 (Step 5에서 연착륙 목록 조회는 구현, 실제 수집 로직은 기존 스크립트 활용)
+1. `run_absa_incremental.py` 구현 (미추론 리뷰 조회 → KcELECTRA 추론 → BQ UPSERT)
+2. `run_sli.py` SLI 스크립트화 (DTW + 생존분석 + 규칙기반 + **LightGBM** → 만장일치 투표)
+3. `run_monthly_pipeline.py` 오케스트레이션 구현 (6단계 순차 실행 + pipeline_log 기록)
+4. 검색트렌드: **의도적 비활성화** (`search_trend.enabled: false`) — API 호출 제한·비용 고려하여 수동 실행으로 분리
 
 ### 7.4 Phase 4 — 대시보드 개발 (미착수)
 
@@ -810,11 +744,12 @@ TABLE_KEYS = {
 2. ⬜ 인터랙티브 HTML 대시보드 구현
 3. ⬜ 자동 생성 테스트
 
-### 7.5 Phase 5 — 검증 및 안정화 (미착수)
+### 7.5 Phase 5 — 검증 및 안정화 (진행 중)
 
 1. ⬜ 전체 파이프라인 end-to-end 테스트
 2. ⬜ 로컬 CSV 백업 후 삭제
-3. ⬜ 월간 스케줄링 설정
+3. **월간 스케줄링 설정** — cron 등록 완료 (`0 3 1 * *`, `scheduler.py --enable`)
+4. **scheduler.py 수정** — 대상 스크립트 `run_monthly_pipeline.py`로 변경, `--local-only` 플래그 제거
 
 ---
 
@@ -826,30 +761,45 @@ TABLE_KEYS = {
 | ABSA 미분류율 28.7%                       | 8개 aspect 모두 none      | aspect_count = 0으로 식별 가능, 대시보드에 표시  |
 | user_masked 충돌                          | 마스킹된 닉네임 중복 가능 | user_id_map으로 영속 매핑 유지                   |
 | OCR 오인식                                | 500+ 교정 패턴 적용 중    | 신규 성분 발견 시 교정 규칙 업데이트 필요        |
-| 네이버 API 호출 제한                      | 일 25,000건               | 캐시 + 키 로테이션으로 대응, 월 1회면 충분       |
-| SLI 계산 시간                             | DTW 클러스터링이 O(n^2)   | 제품 수 ~950이므로 현재 규모에서는 문제 없음     |
+| 네이버 API 호출 제한                      | 일 25,000건               | 수동 실행으로 전환 (자동화 제외)                 |
+| SLI 계산 시간                             | DTW 클러스터링이 O(n²)   | 제품 수 ~950이므로 현재 규모에서는 문제 없음     |
+| cron 실행 환경                            | macOS 로컬 환경 의존      | 개인 PC 전원/네트워크 상태에 따라 실행 실패 가능 |
 
 ---
 
-## 9. 최종 파일 구조 (변경 후)
+## 9. 최종 파일 구조 (v2)
 
 ```
 05_src/04_pipeline/
-├── run_monthly_pipeline.py    [신규] ✅ 월간 오케스트레이션 (6단계 + pipeline_log)
-├── run_pipeline.py            [수정] ✅ BQ 직접 적재 (use_bq 플래그)
-├── run_absa_incremental.py    [신규] ✅ ABSA 증분 추론 (미추론 리뷰 → KcELECTRA → BQ)
-├── run_sli.py                 [신규] ✅ SLI 스크립트화 (DTW+생존+규칙+ML → 투표)
-├── transformer.py             [수정] ✅ load_existing_from_bq() + user_id_map BQ 지원
+├── run_monthly_pipeline.py    [365줄] 월간 오케스트레이션 (6단계 + pipeline_log)
+├── run_pipeline.py            [수정]  BQ 직접 적재 (use_bq 플래그)
+├── run_absa_incremental.py    [신규]  ABSA 증분 추론 (미추론 리뷰 → KcELECTRA → BQ)
+├── run_sli.py                 [598줄] SLI 스크립트화 (DTW+생존+규칙+LightGBM → 투표)
+├── scheduler.py               [121줄] cron 등록/해제/상태확인 → run_monthly_pipeline.py
+├── transformer.py             [수정]  load_existing_from_bq() + user_id_map BQ 지원
 ├── storage.py                 유지
 ├── derived_features.py        유지
 ├── assign_promotion.py        유지
-└── config.yaml                [수정] ✅ ABSA/SLI/검색트렌드/대시보드 섹션, BQ 활성화
+└── config.yaml                [수정]  auto_schedule=true, search_trend=false
 
 05_src/02_bigquery/
-├── bq_client.py               [수정] ✅ TABLE_KEYS 5개 추가 (ERD v3 — 18개)
+├── bq_client.py               [수정]  TABLE_KEYS 5개 추가 (ERD v3 — 18개)
 ├── etl_loader.py              유지
 ├── schema_v2.sql              유지 (기존)
-├── schema_v3.sql              [신규] ✅ 18개 테이블 DDL (기존 13 + 신규 5)
+├── schema_v3.sql              [신규]  18개 테이블 DDL (기존 13 + 신규 5)
 ├── migrate.py                 유지 (v1→v2 마이그레이션)
-└── migrate_v3.py              [신규] ✅ v2→v3 마이그레이션 (ABSA+SLI 초기 적재)
+└── migrate_v3.py              [신규]  v2→v3 마이그레이션 (ABSA+SLI 초기 적재)
 ```
+
+---
+
+## 10. 남은 작업 (TODO)
+
+| 우선순위 | 항목                  | Phase | 설명                                    |
+| -------- | --------------------- | ----- | --------------------------------------- |
+| 높음     | migrate_v3.py 실행    | 1-4   | BQ DDL 실행하여 신규 5개 테이블 생성    |
+| 높음     | E2E 테스트            | 5-1   | 전체 파이프라인 end-to-end 테스트       |
+| 중간     | 증분 크롤링 테스트    | 2-4   | 증분 크롤링 → BQ UPSERT 실제 동작 검증 |
+| 중간     | crawl_history BQ 전환 | 2-5   | 로컬 JSON → BQ 조회 방식 전환          |
+| 낮음     | 대시보드 개발         | 4     | BQ 집계 쿼리 + 인터랙티브 HTML          |
+| 낮음     | 로컬 CSV 정리         | 5-2   | BQ 안정화 확인 후 로컬 CSV 백업 및 삭제 |

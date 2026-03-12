@@ -62,6 +62,7 @@
 | `engagement_score` | FLOAT | 인기도 점수 (0.15×likes + 0.30×shares + 0.55×review_count) |
 | `cp_index` | FLOAT | 가성비 지표 ((engagement_score / price) × 1000) |
 | `review_density` | FLOAT | 리뷰 밀도 (review_count / (마지막리뷰일 - 첫리뷰일)) |
+| `risk_score` | FLOAT | 품질 리스크 점수 (수동 관리, 기본값 0.0) |
 
 #### Products_category
 
@@ -101,9 +102,8 @@ OCR로 추출된 성분 사전과 브랜드/제조사 마스터 정보입니다.
 |---|---|---|
 | `ingredient_id` (PK) | INT | 성분 고유 식별자 |
 | `ingredient_name` | VARCHAR | 성분명 (한글) |
-| **`ingredient_type`** | VARCHAR | 화학 계열 분류 (Polymer, Ester, Vitamin 등 33종) |
-| `is_allergic` | BOOL | 알레르기 유발 성분 여부 (True/False) |
-| `effect` | VARCHAR | 성분 효능 (Moisturizing, Anti-aging, Brightening 등) |
+| `application_role` | VARCHAR | 성분 역할 그룹 (활성성분, 기초제 등) |
+| `ingredient_type` | VARCHAR | 화학 계열 분류 (Polymer, Ester, Vitamin 등 33종) |
 
 #### products_ingredients
 
@@ -169,6 +169,7 @@ OCR로 추출된 성분 사전과 브랜드/제조사 마스터 정보입니다.
 | `user_id` (PK) | INT | 유저 고유 식별자 |
 | `user_total_reviews` | INT | 총 리뷰 작성 수 |
 | `user_activity_level` | VARCHAR | 활동 수준 (Newbie, Junior, Regular, VIP) |
+| `user_avg_rating_reorder` | FLOAT | 재구매 리뷰 평균 평점 (재구매 없으면 0.0) |
 | `user_rating_tendency` | VARCHAR | 평점 성향 (Always Positive, Mostly Positive 등) |
 | `review_tenure` | INT | 리뷰 활동 기간 (첫 리뷰 ~ 마지막 리뷰, 일 단위) |
 
