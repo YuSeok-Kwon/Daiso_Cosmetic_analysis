@@ -75,6 +75,9 @@ cache/
 # GIS 분석 (대용량 데이터)
 06_analysis/05_GIS/
 
+# 개인 작업 폴더
+kys/
+
 # Model checkpoints
 *.pt
 *.pth
