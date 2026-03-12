@@ -22,6 +22,7 @@
 import argparse
 import sys
 import os
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -389,20 +390,6 @@ def main():
     # final 디렉토리 결정
     final_dir = args.final_dir or str(PROJECT_ROOT / "02_processed_data" / "csv" / "final")
 
-    # Step 1: 크롤링
-    if not args.skip_crawl:
-        print("\n[Step 1] 크롤링 실행...")
-        products_csv, reviews_csv, ingredients_csv = run_crawling(config, force_full=args.full)
-    else:
-        products_csv = args.products
-        reviews_csv = args.reviews
-        ingredients_csv = args.ingredients
-        print("\n[Step 1] 크롤링 건너뜀 (기존 CSV 사용)")
-
-    if not any([products_csv, reviews_csv, ingredients_csv]):
-        print("오류: 입력 CSV가 없습니다. --products, --reviews, --ingredients 옵션을 확인하세요.")
-        sys.exit(1)
-
     # BQ 설정 확인
     bq_cfg = config.get("pipeline", {}).get("storage", {}).get("bigquery", {})
     bq_enabled = bq_cfg.get("enabled", False) and not args.local_only
@@ -410,31 +397,86 @@ def main():
     local_cfg = config.get("pipeline", {}).get("storage", {}).get("local", {})
     local_enabled = local_cfg.get("csv", False) or local_cfg.get("parquet", False)
 
+    # 파이프라인 로그 초기화
+    from run_monthly_pipeline import get_next_run_id, log_step
+    run_id = get_next_run_id(bq_dataset)
+    print(f"Run ID: {run_id}")
+
+    # Step 1: 크롤링
+    if not args.skip_crawl:
+        print("\n[Step 1] 크롤링 실행...")
+        step_start = time.time()
+        try:
+            products_csv, reviews_csv, ingredients_csv = run_crawling(config, force_full=args.full)
+            log_step(run_id, "crawling", "success", duration_sec=time.time() - step_start,
+                     meta={"mode": crawl_mode}, dataset=bq_dataset)
+        except Exception as e:
+            log_step(run_id, "crawling", "fail", duration_sec=time.time() - step_start,
+                     error_message=str(e), dataset=bq_dataset)
+            raise
+    else:
+        products_csv = args.products
+        reviews_csv = args.reviews
+        ingredients_csv = args.ingredients
+        print("\n[Step 1] 크롤링 건너뜀 (기존 CSV 사용)")
+        log_step(run_id, "crawling", "skipped", dataset=bq_dataset)
+
+    if not any([products_csv, reviews_csv, ingredients_csv]):
+        print("오류: 입력 CSV가 없습니다. --products, --reviews, --ingredients 옵션을 확인하세요.")
+        sys.exit(1)
+
     # Step 2: 변환
     print("\n[Step 2] 변환 실행...")
-    tables = run_transform(
-        products_csv, reviews_csv, ingredients_csv, final_dir,
-        use_bq=(bq_enabled or args.upload_bq),
-        bq_dataset=bq_dataset,
-    )
+    step_start = time.time()
+    try:
+        tables = run_transform(
+            products_csv, reviews_csv, ingredients_csv, final_dir,
+            use_bq=(bq_enabled or args.upload_bq),
+            bq_dataset=bq_dataset,
+        )
+        total_rows = sum(len(df) for df in tables.values() if isinstance(df, pd.DataFrame))
+        log_step(run_id, "transform", "success", rows_affected=total_rows,
+                 duration_sec=time.time() - step_start, dataset=bq_dataset)
+    except Exception as e:
+        log_step(run_id, "transform", "fail", duration_sec=time.time() - step_start,
+                 error_message=str(e), dataset=bq_dataset)
+        raise
 
     # Step 3: 로컬 저장 (설정에 따라)
     if local_enabled or args.local_only:
         print("\n[Step 3] 로컬 저장...")
-        run_save(tables, config)
+        step_start = time.time()
+        try:
+            run_save(tables, config)
+            log_step(run_id, "local_save", "success", duration_sec=time.time() - step_start,
+                     dataset=bq_dataset)
+        except Exception as e:
+            log_step(run_id, "local_save", "fail", duration_sec=time.time() - step_start,
+                     error_message=str(e), dataset=bq_dataset)
+            raise
     else:
         print("\n[Step 3] 로컬 저장 건너뜀 (BQ 전용 모드)")
 
     # Step 4: BigQuery UPSERT
     if args.upload_bq or bq_enabled:
         print("\n[Step 4] BigQuery UPSERT...")
-        run_upload_bq(tables, config)
+        step_start = time.time()
+        try:
+            bq_results = run_upload_bq(tables, config)
+            bq_rows = sum(info.get("total_processed", 0) for info in bq_results.values())
+            log_step(run_id, "bq_upload", "success", rows_affected=bq_rows,
+                     duration_sec=time.time() - step_start,
+                     meta={"tables": list(bq_results.keys())}, dataset=bq_dataset)
+        except Exception as e:
+            log_step(run_id, "bq_upload", "fail", duration_sec=time.time() - step_start,
+                     error_message=str(e), dataset=bq_dataset)
+            raise
     else:
         print("\n[Step 4] BigQuery 업로드 건너뜀")
 
     elapsed = (datetime.now() - start_time).total_seconds()
     print(f"\n{'=' * 60}")
-    print(f"파이프라인 완료 (소요 시간: {elapsed:.1f}초)")
+    print(f"파이프라인 완료 (Run ID: {run_id}, 소요 시간: {elapsed:.1f}초)")
     print(f"{'=' * 60}")
 
 

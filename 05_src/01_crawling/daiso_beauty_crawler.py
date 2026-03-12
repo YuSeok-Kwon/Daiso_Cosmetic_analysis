@@ -30,7 +30,7 @@ from modules.ingredient_parser import (
     extract_product_section,
     INGREDIENT_KEYWORDS
 )
-from utils import setup_logger, get_date_string
+from utils import setup_logger, get_date_string, extract_rating
 
 # BigQuery 모듈 경로 추가
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -530,15 +530,92 @@ def _extract_reviews(driver, product_code: str, cutoff_date: str = None) -> list
     """
     reviews = []
 
+    # 리뷰 영역 활성화를 위해 스크롤 후 최신순 정렬 클릭
+    try:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.5);")
+        time.sleep(2)
+
+        # 클릭 전 첫 번째 리뷰 날짜 캡처 (리로드 감지용)
+        old_first_date = None
+        try:
+            first_review = driver.find_elements(By.CLASS_NAME, "review-detail")
+            logger.info(f"[정렬 전] 리뷰 요소 수: {len(first_review)}")
+            if first_review:
+                old_first_date = first_review[0].find_element(
+                    By.CLASS_NAME, "cw-bar-list"
+                ).text.split()[0]
+                logger.info(f"[정렬 전] 첫 리뷰 날짜: {old_first_date}")
+        except:
+            pass
+
+        sort_buttons = driver.find_elements(
+            By.CSS_SELECTOR, "ul.filter-selection-group li button.el-button"
+        )
+        for btn in sort_buttons:
+            if "최신순" in btn.text:
+                # 이미 활성 상태면 클릭 불필요
+                if "is-active" in (btn.get_attribute("class") or ""):
+                    logger.info("리뷰 정렬: 최신순 이미 활성")
+                    break
+
+                driver.execute_script("arguments[0].click();", btn)
+
+                # 1) 버튼 활성화 대기
+                for _ in range(5):
+                    time.sleep(1)
+                    if "is-active" in (btn.get_attribute("class") or ""):
+                        break
+
+                # 2) 리뷰 목록 리로드 대기 (첫 리뷰 날짜 변경 감지)
+                reloaded = False
+                if old_first_date:
+                    for wait_i in range(10):
+                        time.sleep(1)
+                        try:
+                            new_reviews = driver.find_elements(By.CLASS_NAME, "review-detail")
+                            if new_reviews:
+                                new_first_date = new_reviews[0].find_element(
+                                    By.CLASS_NAME, "cw-bar-list"
+                                ).text.split()[0]
+                                if new_first_date != old_first_date:
+                                    logger.info(f"[정렬 후] 리로드 확인 ({wait_i+1}s): {old_first_date} → {new_first_date}")
+                                    reloaded = True
+                                    break
+                        except:
+                            pass
+                    if not reloaded:
+                        logger.warning(f"[정렬 후] 리로드 미감지 (10s 대기 완료), 리뷰 수: {len(driver.find_elements(By.CLASS_NAME, 'review-detail'))}")
+                else:
+                    logger.info("[정렬 전] 리뷰 없음 → 3초 대기")
+                    time.sleep(3)
+
+                logger.info("리뷰 정렬: 최신순 적용")
+                break
+    except Exception as e:
+        logger.debug(f"최신순 정렬 클릭 실패 (무시): {e}")
+
     for page in range(1, 999):
         time.sleep(1)
         review_elements = driver.find_elements(By.CLASS_NAME, "review-detail")
-        logger.debug(f"{page}페이지 리뷰 수: {len(review_elements)}")
+        if page == 1:
+            logger.info(f"[페이지1] 리뷰 요소 수: {len(review_elements)}")
+            if review_elements:
+                try:
+                    first_date = review_elements[0].find_element(By.CLASS_NAME, "cw-bar-list").text.split()[0]
+                    logger.info(f"[페이지1] 첫 리뷰 날짜: {first_date}")
+                except:
+                    logger.info("[페이지1] 첫 리뷰 날짜 추출 실패")
 
         hit_cutoff = False
-        for r in review_elements:
+        for ri, r in enumerate(review_elements):
             try:
-                date = r.find_element(By.CLASS_NAME, "cw-bar-list").text.split()[0]
+                date_raw = r.find_element(By.CLASS_NAME, "cw-bar-list").text
+                date = date_raw.split()[0]
+
+                # 첫 페이지 처음 3개 리뷰 상세 로그
+                if page == 1 and ri < 3:
+                    date_conv = date.replace(".", "-")
+                    logger.info(f"  [리뷰{ri}] raw='{date_raw}' → date='{date}' → conv='{date_conv}' cutoff='{cutoff_date}' hit={date_conv <= cutoff_date if cutoff_date else 'N/A'}")
 
                 # 증분 크롤링: cutoff 이하 날짜 도달 시 조기 종료
                 if cutoff_date and date.replace(".", "-") <= cutoff_date:
@@ -561,7 +638,9 @@ def _extract_reviews(driver, product_code: str, cutoff_date: str = None) -> list
                     "text": text,
                     "image_count": image_count,
                 })
-            except:
+            except Exception as ex:
+                if page == 1 and ri < 3:
+                    logger.warning(f"  [리뷰{ri}] 추출 실패: {type(ex).__name__}: {ex}")
                 continue
 
         if hit_cutoff:
@@ -1169,7 +1248,7 @@ def run_all_bq(headless=True, history=None, bq_dataset="daiso"):
         return None, None, None
 
     # BQ에서 전체 제품 코드 조회
-    bq_dir = os.path.join(os.path.dirname(__file__), '..', '02_bigquery')
+    bq_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '02_bigquery'))
     sys.path.insert(0, bq_dir)
     try:
         from bq_client import query_to_df

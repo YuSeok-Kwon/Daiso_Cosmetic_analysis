@@ -97,12 +97,15 @@ class CrawlHistory:
         return len(self._data["products"])
 
     @classmethod
-    def from_existing_csv(cls, history_path: str, reviews_csv_path: str) -> "CrawlHistory":
-        """첫 실행 bootstrapping: reviews_core.csv에서 product_code별 max(review_date) 추출하여 이력 초기화
+    def from_existing_csv(cls, history_path: str, reviews_csv_path: str,
+                          products_csv_path: str = None) -> "CrawlHistory":
+        """첫 실행 bootstrapping: 기존 CSV에서 이력 초기화
+
+        1) products CSV → 모든 제품을 이력에 등록 (리뷰 없는 제품도 "기존"으로 인식)
+        2) reviews CSV → 제품별 마지막 리뷰 날짜 설정 (증분 cutoff 기준)
 
         - history_path에 파일이 이미 있으면 그대로 로드
-        - 없으면 reviews_csv_path에서 이력 생성
-        - reviews_csv_path도 없으면 빈 이력 반환
+        - CSV가 없으면 빈 이력 반환
         """
         history = cls(history_path)
 
@@ -110,18 +113,24 @@ class CrawlHistory:
         if history.product_count > 0:
             return history
 
-        # reviews CSV가 없으면 빈 이력
-        if not reviews_csv_path or not os.path.exists(reviews_csv_path):
-            return history
+        # 1) products CSV에서 제품 코드 등록
+        if products_csv_path and os.path.exists(products_csv_path):
+            df_products = pd.read_csv(products_csv_path, usecols=["product_code"])
+            for code in df_products["product_code"].unique():
+                history.update_product(str(code))
 
-        # CSV에서 bootstrapping
-        df = pd.read_csv(reviews_csv_path, usecols=["product_code", "write_date"])
-        df["write_date"] = df["write_date"].astype(str).apply(_normalize_date)
+        # 2) reviews CSV에서 제품별 마지막 리뷰 날짜 설정
+        if reviews_csv_path and os.path.exists(reviews_csv_path):
+            # write_date / review_date 둘 다 지원
+            df = pd.read_csv(reviews_csv_path, usecols=lambda c: c in ("product_code", "write_date", "review_date"))
+            date_col = "review_date" if "review_date" in df.columns else "write_date"
+            df[date_col] = df[date_col].astype(str).apply(_normalize_date)
 
-        grouped = df.groupby("product_code")["write_date"].max()
+            grouped = df.groupby("product_code")[date_col].max()
 
-        for product_code, max_date in grouped.items():
-            history.update_product(str(product_code), review_date=max_date)
+            for product_code, max_date in grouped.items():
+                history.update_product(str(product_code), review_date=max_date)
 
-        history.save()
+        if history.product_count > 0:
+            history.save()
         return history

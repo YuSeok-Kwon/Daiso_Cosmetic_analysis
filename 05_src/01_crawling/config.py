@@ -2,6 +2,10 @@
 크롤링 설정 파일
 """
 import os
+from pathlib import Path
+
+# 크롤링 모듈 루트 (이 파일이 위치한 디렉토리)
+_CRAWL_ROOT = Path(__file__).resolve().parent
 
 # 크롤링 설정
 CRAWLING_CONFIG = {
@@ -20,9 +24,9 @@ CRAWLING_CONFIG = {
     # 헤드리스 모드 (False = 브라우저 창 보임)
     'headless': True,
 
-    # 데이터 저장 경로
-    'data_dir': 'data',
-    'log_dir': 'logs',
+    # 데이터 저장 경로 (__file__ 기준 절대경로, OS 무관)
+    'data_dir': str(_CRAWL_ROOT / 'data'),
+    'log_dir': str(_CRAWL_ROOT / 'logs'),
 }
 
 # 다이소몰 설정

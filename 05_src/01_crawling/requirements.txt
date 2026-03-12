@@ -1,6 +1,16 @@
+# 크롤링 핵심
 selenium>=4.0.0
-pandas>=2.0.0
-requests>=2.28.0
-python-dotenv>=1.0.0
-easyocr>=1.7.0
+undetected-chromedriver>=3.5.0
 webdriver-manager>=4.0.0
+requests>=2.28.0
+pandas>=2.0.0
+python-dotenv>=1.0.0
+
+# OCR / 이미지 처리
+easyocr>=1.7.0
+opencv-python>=4.6.0
+Pillow>=9.0.0
+
+# BigQuery (선택 — 크롤링만 할 경우 불필요)
+# google-cloud-bigquery>=3.0.0
+# google-auth>=2.0.0

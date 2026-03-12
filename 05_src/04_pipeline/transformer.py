@@ -104,6 +104,14 @@ class CrawlerToERDTransformer:
 
     # ── 1. brands ────────────────────────────────────────────────
 
+    # 브랜드명 정규화 매핑 (크롤링 시 잘못 수집되는 값 보정)
+    BRAND_NORMALIZE = {
+        "비타민C": "다이소",
+        "녹차": "다이소",
+        "약산성": "다이소",
+        "프롬더스킨": "프롬 더 스킨",
+    }
+
     def _transform_brand(self):
         """products_raw의 unique brand → brand_id 할당"""
         existing_brand = self.existing.get("brands", pd.DataFrame())
@@ -121,6 +129,9 @@ class CrawlerToERDTransformer:
         if col is None:
             self.tables["brands"] = existing_brand if not existing_brand.empty else pd.DataFrame(columns=["brand_id", "name"])
             return
+
+        # 브랜드명 정규화 적용
+        self.products_raw[col] = self.products_raw[col].replace(self.BRAND_NORMALIZE)
 
         raw_brands = self.products_raw[col].dropna().unique()
         for b in raw_brands:
@@ -192,6 +203,10 @@ class CrawlerToERDTransformer:
             })
 
         df = pd.DataFrame(rows).sort_values("ingredient_id").reset_index(drop=True)
+        # BQ STRING 컬럼과 타입 일치 (None만 있을 때 INT64 추론 방지)
+        for str_col in ["application_role", "ingredient_type"]:
+            if str_col in df.columns:
+                df[str_col] = df[str_col].astype("object")
         self.tables["ingredients_dic"] = df
 
         # ingredients_raw에 ingredient_id 매핑
@@ -217,6 +232,18 @@ class CrawlerToERDTransformer:
     def _transform_products_core(self):
         """product_code, brand_id, manufacturer_id, name, price, country"""
         df = self.products_raw.copy()
+
+        # products_raw가 비어있으면 기존 데이터 유지
+        if df.empty or "product_code" not in df.columns:
+            existing_core = self.existing.get("products_core", pd.DataFrame())
+            if not existing_core.empty:
+                self.tables["products_core"] = existing_core.copy()
+            else:
+                self.tables["products_core"] = pd.DataFrame(
+                    columns=["product_code", "manufacturer_id", "brand_id", "name", "price", "country"]
+                )
+            return
+
         df = df.drop_duplicates(subset=["product_code"])
 
         # manufacturer_id: 기존 데이터 참조
@@ -239,6 +266,18 @@ class CrawlerToERDTransformer:
     def _transform_products_category(self):
         """product_code, category_1, category_2"""
         df = self.products_raw.copy()
+
+        # products_raw가 비어있으면 기존 데이터 유지
+        if df.empty or "product_code" not in df.columns:
+            existing_cat = self.existing.get("products_category", pd.DataFrame())
+            if not existing_cat.empty:
+                self.tables["products_category"] = existing_cat.copy()
+            else:
+                self.tables["products_category"] = pd.DataFrame(
+                    columns=["product_code", "category_1", "category_2"]
+                )
+            return
+
         df = df.drop_duplicates(subset=["product_code"])
 
         # 크롤러 컬럼명 매핑
@@ -322,6 +361,7 @@ class CrawlerToERDTransformer:
             # 1) existing_data에 user_id_map이 있으면 사용 (BQ 모드)
             existing_map_df = self.existing.get("user_id_map", pd.DataFrame())
             existing_map = {}
+            map_path = None
 
             if not existing_map_df.empty and "user_masked" in existing_map_df.columns:
                 existing_map = dict(zip(existing_map_df["user_masked"], existing_map_df["user_id"]))
@@ -456,10 +496,13 @@ class CrawlerToERDTransformer:
         existing_stats = self.existing.get("products_stats", pd.DataFrame())
 
         # 크롤러 raw에서 likes, shares 가져오기
-        raw_metrics = self.products_raw[["product_code"]].drop_duplicates().copy()
-        for col in ["likes", "shares"]:
-            if col in self.products_raw.columns:
-                raw_metrics[col] = self.products_raw.drop_duplicates("product_code")[col].values
+        if not self.products_raw.empty and "product_code" in self.products_raw.columns:
+            raw_metrics = self.products_raw[["product_code"]].drop_duplicates().copy()
+            for col in ["likes", "shares"]:
+                if col in self.products_raw.columns:
+                    raw_metrics[col] = self.products_raw.drop_duplicates("product_code")[col].values
+        else:
+            raw_metrics = pd.DataFrame(columns=["product_code"])
 
         # existing_stats에 raw metrics 병합 (크롤러 값 우선)
         if not existing_stats.empty:
@@ -535,11 +578,10 @@ def load_existing_from_bq(dataset: str = "daiso") -> Dict[str, pd.DataFrame]:
         TABLE_ORDER의 각 테이블에 대해 ID 매핑용 DataFrame 반환.
         추가 키: "user_id_map", "max_review_id"
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    try:
-        from bigquery.bq_client import query_to_df
-    except ImportError:
-        from bq_client import query_to_df
+    bq_dir = str(Path(__file__).resolve().parent.parent / "02_bigquery")
+    if bq_dir not in sys.path:
+        sys.path.insert(0, bq_dir)
+    from bq_client import query_to_df
 
     data = {}
 
@@ -580,13 +622,13 @@ def load_existing_from_bq(dataset: str = "daiso") -> Dict[str, pd.DataFrame]:
             columns=["promotion_id", "description", "brand_id", "event_type", "start_date", "end_date"]
         )
 
-    # products_core: product_code → manufacturer_id 매핑
+    # products_core: 전체 컬럼 조회 (products_raw 비어있을 때 폴백 용도 포함)
     try:
         data["products_core"] = query_to_df(
-            f"SELECT product_code, manufacturer_id, brand_id FROM `{dataset}.products_core`"
+            f"SELECT product_code, manufacturer_id, brand_id, name, price, country FROM `{dataset}.products_core`"
         )
     except Exception:
-        data["products_core"] = pd.DataFrame(columns=["product_code", "manufacturer_id", "brand_id"])
+        data["products_core"] = pd.DataFrame(columns=["product_code", "manufacturer_id", "brand_id", "name", "price", "country"])
 
     # products_stats: 기존 likes, shares 보존용
     try:

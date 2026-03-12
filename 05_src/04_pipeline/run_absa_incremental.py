@@ -97,12 +97,14 @@ def build_absa_tables(reviews_df: pd.DataFrame, results_df: pd.DataFrame, absa_v
 
     # aspect_sentiments 파싱
     def parse_aspects(val):
-        if pd.isna(val) or val == "[]":
+        if isinstance(val, list):
+            return val
+        if val is None or (isinstance(val, float) and pd.isna(val)) or val == "[]":
             return []
         try:
             if isinstance(val, str):
                 return ast.literal_eval(val)
-            return val if isinstance(val, list) else []
+            return []
         except (ValueError, SyntaxError):
             return []
 

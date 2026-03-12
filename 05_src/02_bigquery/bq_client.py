@@ -171,32 +171,75 @@ def upsert_df(
         if key_columns is None:
             raise ValueError(f"테이블 '{table}'의 key_columns을 지정해주세요.")
 
-    # 임시 테이블에 데이터 적재
+    # 대상 테이블 스키마 조회 → NULL-only 컬럼에만 적용 (타입 추론 불가 방지)
     temp_table = f"{project}.{dataset}._temp_{table}"
+    null_only_cols = set(col for col in df.columns if df[col].isna().all())
+
     job_config = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
     )
+
+    if null_only_cols:
+        try:
+            target_ref = f"{project}.{dataset}.{table}"
+            target_schema = client.get_table(target_ref).schema
+            # NULL-only 컬럼에 대해서만 대상 스키마 적용
+            schema_fields = [f for f in target_schema if f.name in null_only_cols]
+            if schema_fields:
+                job_config.schema = schema_fields
+        except Exception:
+            pass
+
     job = client.load_table_from_dataframe(df, temp_table, job_config=job_config)
     job.result()
 
-    # MERGE 쿼리 생성
+    # 대상 테이블 스키마로 CAST 매핑 구성 (타입 불일치 자동 해결)
     target_table = f"`{project}.{dataset}.{table}`"
     source_table = f"`{temp_table}`"
 
-    # JOIN 조건
-    join_conditions = " AND ".join([f"T.{col} = S.{col}" for col in key_columns])
+    # 스키마 타입 → SQL CAST 타입 매핑
+    _BQ_TYPE_MAP = {
+        "FLOAT": "FLOAT64", "INTEGER": "INT64", "BOOLEAN": "BOOL",
+    }
 
-    # UPDATE SET 절 (PK 제외)
-    update_columns = [col for col in df.columns if col not in key_columns]
+    cast_map = {}  # col → "CAST(S.col AS TYPE)" 매핑
+    target_col_set = None  # 대상 테이블에 존재하는 컬럼 집합
+    try:
+        target_ref = f"{project}.{dataset}.{table}"
+        target_schema = {f.name: f.field_type for f in client.get_table(target_ref).schema}
+        target_col_set = set(target_schema.keys())
+        temp_schema = {f.name: f.field_type for f in client.get_table(temp_table).schema}
+        for col in df.columns:
+            if col in target_schema and col in temp_schema:
+                if target_schema[col] != temp_schema[col]:
+                    sql_type = _BQ_TYPE_MAP.get(target_schema[col], target_schema[col])
+                    cast_map[col] = f"CAST(S.{col} AS {sql_type})"
+    except Exception:
+        pass
+
+    # DataFrame 컬럼 중 대상 테이블에 존재하는 것만 사용
+    if target_col_set is not None:
+        merge_columns = [col for col in df.columns if col in target_col_set]
+    else:
+        merge_columns = list(df.columns)
+
+    def _src(col):
+        return cast_map.get(col, f"S.{col}")
+
+    # JOIN 조건
+    join_conditions = " AND ".join([f"T.{col} = {_src(col)}" for col in key_columns])
+
+    # UPDATE SET 절 (PK 제외, 대상 테이블에 있는 컬럼만)
+    update_columns = [col for col in merge_columns if col not in key_columns]
     if update_columns:
-        update_set = ", ".join([f"T.{col} = S.{col}" for col in update_columns])
+        update_set = ", ".join([f"T.{col} = {_src(col)}" for col in update_columns])
         update_clause = f"WHEN MATCHED THEN UPDATE SET {update_set}"
     else:
         update_clause = ""
 
-    # INSERT 절
-    all_columns = ", ".join(df.columns)
-    insert_values = ", ".join([f"S.{col}" for col in df.columns])
+    # INSERT 절 (대상 테이블에 있는 컬럼만)
+    all_columns = ", ".join(merge_columns)
+    insert_values = ", ".join([_src(col) for col in merge_columns])
 
     merge_sql = f"""
     MERGE {target_table} T

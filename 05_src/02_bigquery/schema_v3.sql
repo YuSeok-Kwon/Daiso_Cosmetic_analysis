@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS `daiso.products_stats` (
   likes INT64,
   shares INT64,
   review_count INT64,
+  first_review_date DATE,
   engagement_score FLOAT64,
   cp_index FLOAT64,
   review_density FLOAT64,
@@ -101,8 +102,9 @@ CREATE TABLE IF NOT EXISTS `daiso.users_profile` (
 -- 11. users_repurchase
 CREATE TABLE IF NOT EXISTS `daiso.users_repurchase` (
   user_id INT64 NOT NULL,
-  user_category_repurchase INT64,
-  user_brand_repurchase INT64
+  reorder_user_category INT64,
+  reorder_user_brand INT64,
+  reorder_user_avg_rating FLOAT64
 );
 
 -- 12. reviews_core

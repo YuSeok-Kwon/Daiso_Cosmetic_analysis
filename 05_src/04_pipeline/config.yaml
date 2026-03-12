@@ -24,13 +24,7 @@ pipeline:
         - all
       메이크업:
         - all
-      네일용품:
-        - all
       맨케어:
-        - all
-      미용소품:
-        - all
-      헤어/바디:
         - all
 
   storage:
@@ -50,7 +44,7 @@ pipeline:
   sli:
     enabled: true
     version: "v1"
-    min_votes: 3              # 최소 투표 수
+    min_votes: 4              # 만장일치 (4/4 방법론 합의)
 
   search_trend:
     enabled: false            # 자동화 제외 (수동 실행만)

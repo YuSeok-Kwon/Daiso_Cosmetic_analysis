@@ -20,7 +20,7 @@ except ImportError:
     yaml = None
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
-PIPELINE_SCRIPT = Path(__file__).parent / "run_pipeline.py"
+PIPELINE_SCRIPT = Path(__file__).parent / "run_monthly_pipeline.py"
 CRON_MARKER = "# whypi-pipeline-auto"
 
 
@@ -58,7 +58,7 @@ def enable():
     python_path = sys.executable
     script_path = str(PIPELINE_SCRIPT.resolve())
 
-    cron_line = f"{cron_expr} {python_path} {script_path} --local-only {CRON_MARKER}"
+    cron_line = f"{cron_expr} {python_path} {script_path} {CRON_MARKER}"
 
     current = get_current_crontab()
 
