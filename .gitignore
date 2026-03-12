@@ -72,6 +72,9 @@ cache/
 *.ai
 *.ico
 
+# GIS 분석 (대용량 데이터)
+06_analysis/05_GIS/
+
 # Model checkpoints
 *.pt
 *.pth
